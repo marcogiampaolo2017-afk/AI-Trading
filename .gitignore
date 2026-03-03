@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Project specific
+best_models/
+logs/
+tensorboard_logs/
+*.zip
+*.png
+reporte_equity_data.csv
+reporte_trades_detalle.csv
