@@ -307,3 +307,31 @@ def augment_data_noise(df, probability=0.3):
         noise = np.random.normal(0, 0.00005, size=n_masked) # ±0.5 pips
         df.loc[mask, "Close"] += noise
     return df
+
+def add_volume_sniper_features(df):
+    """
+    Volumen Spread Analysis (VSA). "Lupa" para Modo Francotirador (V12).
+    Busca huellas institucionales enormes analizando la cantidad de volumen vs tamaño de la vela.
+    """
+    import numpy as np
+
+    # 1. Spread (tamaño) de la vela H1
+    spread = (df["High"] - df["Low"]).replace(0, 0.00001)
+
+    # 2. VSA Ratio (Volumen / Spread)
+    # Mucho volumen pero poco movimiento = Gran jugador acumulando posición ocultamente.
+    vsa_ratio = df["Volume"] / spread
+    df["vsa_ratio_norm"] = vsa_ratio / vsa_ratio.rolling(50).mean().replace(0, 1)
+
+    # 3. Delta Volumen (Acelerador de Presión)
+    df["volume_delta"] = df["Volume"].pct_change()
+
+    # 4. Vela Clímax (Detector de agotamiento del mercado)
+    avg_vol = df["Volume"].rolling(50).mean()
+    avg_spr = spread.rolling(50).mean()
+    df["climax_candle"] = ((df["Volume"] > avg_vol * 2.5) & (spread > avg_spr * 1.5)).astype(float)
+
+    sniper_cols = ["vsa_ratio_norm", "volume_delta", "climax_candle"]
+    df[sniper_cols] = df[sniper_cols].fillna(0)
+
+    return df, sniper_cols

@@ -45,7 +45,7 @@ from trading_env import ForexTradingEnv
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 FILE_PATH  = "data/EURUSD_Hourly_2010_2026.csv"
-MODEL_PATH = "./best_models/best_model.zip"
+MODEL_PATH = "model_eurusd_titany_v10_golden.zip"
 VEC_NORM   = "vec_normalize.pkl"
 SL_OPTS    = [20, 50, 100]
 TP_OPTS    = [40, 100, 200]

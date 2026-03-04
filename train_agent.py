@@ -9,7 +9,7 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv, VecNorm
 from stable_baselines3.common.callbacks import EvalCallback
 from sb3_contrib import RecurrentPPO # TRUE MEMORY ARCHITECTURE
 
-from indicators import load_and_preprocess_data, add_quant_features, augment_data_noise, add_hmm_regime_proxy, add_physics_features, add_golden_strategy_features
+from indicators import load_and_preprocess_data, add_quant_features, augment_data_noise, add_hmm_regime_proxy, add_physics_features, add_golden_strategy_features, add_volume_sniper_features
 from trading_env import ForexTradingEnv
 
 def main():
@@ -33,6 +33,10 @@ def main():
     df, golden_cols = add_golden_strategy_features(df)
     feature_cols.extend(golden_cols)
     
+    # === INYECCIÓN V12: LUPA DE FRANCOTIRADOR (VSA Delta Volume) ===
+    df, sniper_cols = add_volume_sniper_features(df)
+    feature_cols.extend(sniper_cols)
+
     # === FEATURE SELECTION PRO (Pillar 6) ===
     # Filtramos por correlación para eliminar ruido (> 0.95 redundancy)
     corr_matrix = df[feature_cols].corr().abs()
@@ -124,21 +128,21 @@ def main():
         # tensorboard_log disabled - not critical for training
     )
 
-    print("🛡️ FASE 1: V10 Golden Hybrid - Asimilación de Estrategia (150k pasos)...")
-    # Fase 1: Alta exploración para descubrir CÓMO usar las señales Golden
+    print("🛡️ FASE 1: V12 Sniper - Asimilación de Estrategia VSA (2.5M pasos)...")
+    # Fase 1: Alta exploración para descubrir CÓMO usar las señales Golden y VSA
     model.ent_coef = 0.05
-    model.learn(total_timesteps=150000, callback=eval_callback)
+    model.learn(total_timesteps=2500000, callback=eval_callback)
 
-    print("💎 FASE 2: V10 Refinamiento - Maximización de Profit (300k pasos)...")
+    print("💎 FASE 2: V12 Refinamiento - Francotirador de Alta Precisión (5M pasos)...")
     model.ent_coef = 0.01
-    model.learn(total_timesteps=300000, callback=eval_callback, reset_num_timesteps=False)
+    model.learn(total_timesteps=5000000, callback=eval_callback, reset_num_timesteps=False)
 
-    print("🔥 FASE 3: V10 Hardening - Preparación Live (150k pasos)...")
+    print("🔥 FASE 3: V12 Hardening - Miedo a la Pérdida (2.5M pasos)...")
     model.ent_coef = 0.005
-    model.learn(total_timesteps=150000, callback=eval_callback, reset_num_timesteps=False)
+    model.learn(total_timesteps=2500000, callback=eval_callback, reset_num_timesteps=False)
 
     # GUARDAR RESULTADOS
-    model_name = "model_eurusd_titany_v10_golden"
+    model_name = "model_eurusd_titany_v12_sniper"
     model.save(model_name)
     train_vec_env.save("vec_normalize.pkl")
     print(f"🧬 ¡V10 GOLDEN HYBRID COMPLETADO! Modelo guardado como '{model_name}'.")
