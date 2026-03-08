@@ -38,6 +38,7 @@ from indicators import (
     add_hmm_regime_proxy,
     add_physics_features,
     add_golden_strategy_features,
+    add_volume_sniper_features,
 )
 from trading_env import ForexTradingEnv
 
@@ -45,7 +46,7 @@ from trading_env import ForexTradingEnv
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 FILE_PATH  = "data/EURUSD_Hourly_2010_2026.csv"
-MODEL_PATH = "model_eurusd_titany_v10_golden.zip"
+MODEL_PATH = "model_eurusd_titany_v12_sniper.zip"
 VEC_NORM   = "vec_normalize.pkl"
 SL_OPTS    = [20, 50, 100]
 TP_OPTS    = [40, 100, 200]
@@ -286,9 +287,10 @@ def main():
     # ── Datos ─────────────────────────────────────────────────────────────────
     print("📂 Cargando datos...")
     df, feature_cols = load_and_preprocess_data(FILE_PATH)
-    df, quant_cols   = add_quant_features(df);        feature_cols.extend(quant_cols)
-    df, phys_cols    = add_physics_features(df);      feature_cols.extend(phys_cols)
-    df, gold_cols    = add_golden_strategy_features(df); feature_cols.extend(gold_cols)
+    df, quant_cols   = add_quant_features(df);           feature_cols.extend(quant_cols)
+    df, phys_cols    = add_physics_features(df);          feature_cols.extend(phys_cols)
+    df, gold_cols    = add_golden_strategy_features(df);  feature_cols.extend(gold_cols)
+    df, sniper_cols  = add_volume_sniper_features(df);   feature_cols.extend(sniper_cols)
 
     # Mismo split Walk-Forward que el entrenamiento (Window 3)
     total_len  = len(df)

@@ -577,9 +577,8 @@ class TitanyBotApp(ctk.CTk):
             script_dir = os.path.dirname(os.path.abspath(__file__))
             # 🚀 CARGA DEL MODELO V5 ULTIMATE (Solicitado por el Usuario)
             # 🚀 CARGA DEL MODELO V10 GOLDEN (Prioridad)
-            model_name = "best_models/best_model.zip"
-            if not os.path.exists(os.path.join(script_dir, model_name)):
-                model_name = "model_eurusd_titany_v5_ultimate.zip"
+            # 🚀 CARGA DEL MODELO V12 SNIPER (MODO FRANCOTIRADOR HFT)
+            model_name = "model_eurusd_titany_v12_sniper.zip"
             model_path = os.path.join(script_dir, model_name)
             
             # Carga del normalizador
@@ -592,7 +591,8 @@ class TitanyBotApp(ctk.CTk):
             # Recreamos un entorno fake basado en el modelo
             def dummy_env_adaptive():
                 from trading_env import ForexTradingEnv
-                n_ind = 23 if "best_model" in model_name else 17
+                # V12 Sniper (26 features), V10 (23), V7 (21)
+                n_ind = 26 if "v12_sniper" in model_name else (23 if "v10" in model_name else 21)
                 return ForexTradingEnv(pd.DataFrame(np.zeros((100, n_ind))), window_size=30, sl_options=SL_OPTS_L, tp_options=TP_OPTS_L)
             
             v_env = DummyVecEnv([dummy_env_adaptive])
@@ -797,6 +797,7 @@ class TitanyBotApp(ctk.CTk):
                     df_p, _ = indicators.add_hmm_regime_proxy(df_p)
                     df_p, _ = indicators.add_physics_features(df_p)
                     df_p, _ = indicators.add_golden_strategy_features(df_p)
+                    df_p, _ = indicators.add_volume_sniper_features(df_p)
                     
                     base_cols = [
                         "rsi_14", "rsi_50", "adx_14", "atr_14", 
@@ -808,6 +809,7 @@ class TitanyBotApp(ctk.CTk):
                     regime_col = ["regime_proxy"]
                     phys_cols = ["phys_pressure", "phys_viscosity", "phys_fisher", "phys_hawkes"]
                     golden_cols = ["golden_trend", "golden_cross", "golden_setup"]
+                    sniper_cols = ["vsa_ratio_norm", "volume_delta", "climax_candle"]
                     
                     state_features = 3
                     try:
@@ -815,8 +817,10 @@ class TitanyBotApp(ctk.CTk):
                     except:
                         required_indicators = 21 # Default V7
                     
-                    # SELECCIÓN AUTOMÁTICA ADAPTADA
-                    if required_indicators == 23: # V10 Golden
+                    # SELECCIÓN AUTOMÁTICA ADAPTADA (V12 SNIPER = 26 FEATURES + 3 STATE)
+                    if required_indicators == 26: # V12 Sniper Full
+                         cols = base_cols + quant_cols + phys_cols + golden_cols + sniper_cols
+                    elif required_indicators == 23: # V10 Golden
                          cols = base_cols + quant_cols + regime_col + phys_cols + golden_cols[:2]
                     elif required_indicators == 21: # V7 Survivor
                          cols = base_cols + quant_cols + phys_cols + regime_col
@@ -923,6 +927,20 @@ class TitanyBotApp(ctk.CTk):
                                 allow_entry = False
                                 if int(time.time()) % 60 == 0:
                                     self.add_log("🛡️ FILTRO LAZARUS: Esperando mejor setup (FER<0.30 | Z<1.2).")
+
+                        # === FILTRO DE CONFIANZA DE BALLENAS (V12 SNIPER) ===
+                        # Solo acepta el trade si hay confirmación de volumen VSA
+                        vsa_confirm = False
+                        if "vsa_ratio_norm" in df_p.columns:
+                            last_vsa = df_p["vsa_ratio_norm"].iloc[-1]
+                            # vsa_ratio_norm > 1.1 significa volumen institucional por encima de la media
+                            if last_vsa > 1.1:
+                                vsa_confirm = True
+                            
+                        if res[0] == "OPEN" and not vsa_confirm:
+                            allow_entry = False
+                            if int(time.time()) % 60 == 0:
+                                self.add_log(f"🕵️ VSA FILTER: Bloqueando entrada. Volumen débil ({last_vsa:.2f} < 1.1)")
                         
                         # --- NUEVO: SISTEMA ANTI-ESCOPETA (Cooldown Reducido) ---
                         time_since_last = time.time() - last_trade_time

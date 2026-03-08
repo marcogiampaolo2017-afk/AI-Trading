@@ -306,9 +306,9 @@ class ForexTradingEnv(gym.Env):
             adjusted_reward += (net_pips * 0.2)
 
         # === FRANCOTIRADOR V12: CASTIGO ASIMÉTRICO (DOLOR AL FALLAR BALAS) ===
-        # Si pierde, duele el triple. TERROR a fallar. Obliga a presionar el gatillo solo al 80% seguros.
+        # Si pierde, duele un 50% más. TERROR a fallar pero con fluidez (V13).
         if net_pips < 0:
-            adjusted_reward = net_pips * 3.0
+            adjusted_reward = net_pips * 1.5
 
         # Update equity in USD
         self.equity_usd += net_pips * self.usd_per_pip
