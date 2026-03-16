@@ -111,5 +111,48 @@ python train_agent.py
 Una vez que termine el entrenamiento (las 3 fases completas por las que pasará), el script generará automáticamente un archivo llamado `best_model.zip` (o similar) dentro de la carpeta `/best_models/`. 
 **Devuélvele ese archivo .zip** al dueño del repositorio para que pueda conectarlo al bot en vivo usando `TITANY_AI_Terminal_Pro.py`.
 
+## 🗺️ Mapa de Guerra (Estructura del Proyecto)
+
+Para entender perfectamente cómo funciona Mahoraga (tu bot), aquí tienes la estructura oficial del sistema:
+
+```mermaid
+graph TD
+    Root["📁 ReinforcementTrading (Proyecto)"]
+    
+    Executive["🧠 EL GENERAL (Ejecución)"]
+    Models["💿 LOS CEREBROS (Modelos AI)"]
+    Senses["👀 LOS SENTIDOS (Lógica/Datos)"]
+    Memory["📓 LA MEMORIA (Persistencia)"]
+    Training["🛠️ LABORATORIO (Entrenamiento)"]
+    Reports["📊 ARCHIVOS DE GUERRA (Informes)"]
+
+    Root --> Executive
+    Root --> Models
+    Root --> Senses
+    Root --> Memory
+    Root --> Training
+    Root --> Reports
+
+    Executive --> T1["TITANY_AI_Terminal_Pro.py<br/>(Tu Bot actual, la UI y el Sniper)"]
+    Executive --> T2["live_trading_system.py<br/>(Motor de trading secundario)"]
+
+    Models --> M1["model_eurusd_titany_v12_sniper.zip<br/>(Tu modelo actual de combate)"]
+    Models --> M3["vec_normalize.pkl<br/>(El manual de calibración del modelo)"]
+
+    Senses --> S1["indicators.py<br/>(Calcula FER, Z-Score, VSA, etc.)"]
+    Senses --> S2["trading_env.py<br/>(Define las reglas del juego para la IA)"]
+    Senses --> S3["📁 data/<br/>(Donde se guarda el historial de velas)"]
+
+    Memory --> Mem1["synaptic_memory.json<br/>(Recuerda el peso W de confianza)"]
+    Memory --> Mem2["equity_history.json<br/>(Recuerda tu gráfico de la semana)"]
+    Memory --> Mem3["lstm_memory_v12.pkl<br/>(Recuerda el estado mental de la IA)"]
+
+    Training --> L1["train_agent.py<br/>(Para crear nuevas IAs desde cero)"]
+    Training --> L2["strategy.ipynb<br/>(Libreta para probar nuevas matemáticas)"]
+
+    Reports --> R1["reporte_trades_detalle.csv<br/>(Excel con cada operación histórica)"]
+    Reports --> R2["reporte_600k_pasos.png<br/>(Foto del éxito del entrenamiento)"]
+```
+
 ---
 *Powered by Stable-Baselines3, PyTorch & MetaTrader5.*

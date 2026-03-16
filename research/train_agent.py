@@ -9,8 +9,12 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv, VecNorm
 from stable_baselines3.common.callbacks import EvalCallback
 from sb3_contrib import RecurrentPPO # TRUE MEMORY ARCHITECTURE
 
-from indicators import load_and_preprocess_data, add_quant_features, augment_data_noise, add_hmm_regime_proxy, add_physics_features, add_golden_strategy_features, add_volume_sniper_features
-from trading_env import ForexTradingEnv
+import sys
+# Ajustar path para importar desde carpetas hermanas
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from env.indicators import load_and_preprocess_data, add_quant_features, augment_data_noise, add_hmm_regime_proxy, add_physics_features, add_golden_strategy_features, add_volume_sniper_features
+from env.trading_env import ForexTradingEnv
 
 def main():
     # --- OPTIMIZACIÓN MULTINÚCLEO PARA VELOCIDAD EXTREMA ---
@@ -18,7 +22,9 @@ def main():
     th.set_num_threads(N_CORES)           # Limita PyTorch para evitar peleas de CPU
     print(f"⚡ Iniciando en MODO TURBO: Usando {N_CORES} núcleos paralelos.")
     
-    file_path = "data/EURUSD_Hourly_2010_2026.csv"
+    # Detectar el directorio raíz del proyecto
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    file_path = os.path.join(root_dir, "data", "EURUSD_Hourly_2010_2026.csv")
     df, feature_cols = load_and_preprocess_data(file_path)
     
     # === INYECCIÓN DE CONOCIMIENTO AVANZADO ===
@@ -96,8 +102,8 @@ def main():
 
     eval_callback = EvalCallback(
         test_eval_env, 
-        best_model_save_path='./best_models/',
-        log_path='./logs/', 
+        best_model_save_path=os.path.join(root_dir, 'models', 'best_models'),
+        log_path=os.path.join(root_dir, 'logs'), 
         eval_freq=10000,
         deterministic=True, 
         render=False
@@ -141,11 +147,15 @@ def main():
     model.ent_coef = 0.005
     model.learn(total_timesteps=2500000, callback=eval_callback, reset_num_timesteps=False)
 
-    # GUARDAR RESULTADOS
+    # GUARDAR RESULTADOS EN CARPETA MODELS
     model_name = "model_eurusd_titany_v12_sniper"
-    model.save(model_name)
-    train_vec_env.save("vec_normalize.pkl")
-    print(f"🧬 ¡V10 GOLDEN HYBRID COMPLETADO! Modelo guardado como '{model_name}'.")
+    model_save_path = os.path.join(root_dir, "models", model_name)
+    model.save(model_save_path)
+    
+    norm_save_path = os.path.join(root_dir, "models", "vec_normalize.pkl")
+    train_vec_env.save(norm_save_path)
+    
+    print(f"🧬 ¡V12 SNIPER COMPLETADO! Modelo guardado en 'models/{model_name}'.")
     print(f"📊 Estrategia EMA200+MACD integrada en el núcleo neuronal.")
 
     # --- GENERACIÓN AUTOMÁTICA DEL GRÁFICO ---
@@ -197,13 +207,13 @@ def main():
             plt.legend()
             plt.grid(True, alpha=0.3)
 
-            plt.tight_layout()
-            plt.savefig("reporte_600k_pasos_pro_max.png", dpi=150)
-            print(f"✅ Gráfico guardado: reporte_600k_pasos_pro_max.png")
-            print(f"   → Timesteps totales: {timesteps[-1]:,} | Evaluaciones: {len(timesteps)}")
-            print(f"   → Mejor recompensa: {mean_rewards.max():.4f} (paso {timesteps[mean_rewards.argmax()]:,})")
-            graph_generated = True
-
+            reports_dir = os.path.join(root_dir, "reports")
+            os.makedirs(reports_dir, exist_ok=True)
+            
+            report_img_path = os.path.join(reports_dir, "reporte_600k_pasos_pro_max.png")
+            plt.savefig(report_img_path, dpi=150)
+            print(f"✅ Gráfico guardado en 'reports/reporte_600k_pasos_pro_max.png'")
+            
             # Exportar CSV de los datos del gráfico
             df_curves = pd.DataFrame({
                 'Timestep': timesteps,
@@ -212,8 +222,10 @@ def main():
             })
             if ep_lengths is not None:
                 df_curves['Mean_Episode_Length'] = ep_lengths.mean(axis=1)
-            df_curves.to_csv("reporte_equity_data.csv", index=False)
-            print("✅ Datos guardados en 'reporte_equity_data.csv'")
+            
+            report_csv_path = os.path.join(reports_dir, "reporte_equity_data.csv")
+            df_curves.to_csv(report_csv_path, index=False)
+            print(f"✅ Datos guardados en 'reports/reporte_equity_data.csv'")
 
         except Exception as e:
             print(f"⚠️  Error leyendo logs: {e}. Usando método alternativo...")
