@@ -1,0 +1,1 @@
+"orgánico" es la palabra TE PREGUNTO si poedos crear micro bot = organismo vivo i conciente que gestione estos filtros  estaticos  que se moldee al mercado. O algo mas grande que nuestro titany_ai_terminal_pro.py valla cambiando por si solo Adatandose al mercado ejemplo

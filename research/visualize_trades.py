@@ -7,16 +7,13 @@ realizó durante el test set:
   ▼ Triángulo ROJO  = SELL (venta para bajar)
   ○ Círculo AZUL    = Cierre con ganancia
   ○ Círculo NARANJA = Cierre con pérdida
-
 El eje X = tiempo (velas H1), el eje Y = precio EURUSD.
 Se imprime también un resumen estadístico al final.
-
 Uso:
     python visualize_trades.py
     python visualize_trades.py --headless          # Sin ventana emergente
     python visualize_trades.py --window 200        # Solo últimas 200 velas del test
 """
-
 import os
 import sys
 import argparse
@@ -26,12 +23,8 @@ import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.lines import Line2D
-
-# ── Stable-Baselines ──────────────────────────────────────────────────────────
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from sb3_contrib import RecurrentPPO
-
-# ── Proyecto ──────────────────────────────────────────────────────────────────
 from indicators import (
     load_and_preprocess_data,
     add_quant_features,
@@ -41,18 +34,12 @@ from indicators import (
     add_volume_sniper_features,
 )
 from trading_env import ForexTradingEnv
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CONFIG
-# ─────────────────────────────────────────────────────────────────────────────
 FILE_PATH  = "data/EURUSD_Hourly_2010_2026.csv"
 MODEL_PATH = "model_eurusd_titany_v12_sniper.zip"
 VEC_NORM   = "vec_normalize.pkl"
 SL_OPTS    = [20, 50, 100]
 TP_OPTS    = [40, 100, 200]
 WIN        = 30
-
-
 def build_test_env(test_df, feature_cols):
     """Crea el entorno de evaluación (sin normalización de rewards)."""
     def _make():
@@ -67,8 +54,6 @@ def build_test_env(test_df, feature_cols):
         vec.training = False
         vec.norm_reward = False
     return vec
-
-
 def run_episode(vec_env, model):
     """
     Ejecuta un episodio completo y recoge:
@@ -79,14 +64,11 @@ def run_episode(vec_env, model):
     obs = vec_env.reset()
     lstm_states = None
     episode_starts = np.ones((1,), dtype=bool)
-
     prices       = []
     equity_curve = []
-    trades       = []          # lista de trades CERRADOS
-
-    open_trade   = None        # trade que está abierto ahora mismo
+    trades       = []                                    
+    open_trade   = None                                            
     step_idx     = 0
-
     done = False
     while not done:
         action, lstm_states = model.predict(
@@ -97,31 +79,23 @@ def run_episode(vec_env, model):
         obs, reward, done_arr, info_arr = vec_env.step(action)
         episode_starts = done_arr
         done = bool(done_arr[0])
-
         info = info_arr[0]
         ti   = info.get("last_trade_info")
         if ti is None:
             ti = {}
-
-        # Precio actual (Close de la barra)
         price = info.get("close_price", None)
         if price is None or price == 0:
             price = prices[-1] if prices else 1.17
         prices.append(float(price))
-
         equity_curve.append(info.get("equity_usd", 10000.0))
-
-        # ── Detectar OPEN ───────────────────────────────────────────────────
         if ti.get("event") == "OPEN":
             open_trade = {
                 "open_step"    : step_idx,
                 "open_price"   : ti.get("entry_price", price),
-                "direction"    : ti.get("position", 0),   # +1 BUY / -1 SELL
+                "direction"    : ti.get("position", 0),                     
                 "sl"           : ti.get("sl_price"),
                 "tp"           : ti.get("tp_price"),
             }
-
-        # ── Detectar CLOSE ──────────────────────────────────────────────────
         elif ti.get("event") == "CLOSE" and open_trade is not None:
             net_pips = ti.get("net_pips", 0.0)
             open_trade.update({
@@ -133,23 +107,17 @@ def run_episode(vec_env, model):
             })
             trades.append(open_trade)
             open_trade = None
-
         step_idx += 1
-
     return prices, trades, equity_curve
-
-
 def plot_trades(prices, trades, equity_curve, window=None):
     """Genera el gráfico principal de trades sobre el precio."""
     n = len(prices)
     x = np.arange(n)
-
     if window:
         start = max(0, n - window)
         prices       = prices[start:]
         equity_curve = equity_curve[start:]
         x            = np.arange(len(prices))
-        # Ajustar índices de trades al nuevo rango
         adj_trades = []
         for t in trades:
             os_ = t["open_step"]  - start
@@ -160,8 +128,6 @@ def plot_trades(prices, trades, equity_curve, window=None):
                 t2["close_step"] = min(len(prices)-1, cs_)
                 adj_trades.append(t2)
         trades = adj_trades
-
-    # ── Layout ────────────────────────────────────────────────────────────────
     fig, (ax1, ax2) = plt.subplots(
         2, 1, figsize=(18, 11),
         gridspec_kw={"height_ratios": [3, 1]}, sharex=True
@@ -172,16 +138,12 @@ def plot_trades(prices, trades, equity_curve, window=None):
         ax.tick_params(colors="white")
         for spine in ax.spines.values():
             spine.set_edgecolor("#30363d")
-
-    # ── Precio ────────────────────────────────────────────────────────────────
     ax1.plot(x, prices, color="#58a6ff", linewidth=0.8, alpha=0.85, zorder=1)
     ax1.set_ylabel("Precio EURUSD", color="white", fontsize=11)
     ax1.yaxis.label.set_color("white")
     ax1.set_title("TITANY AI — Operaciones sobre el Precio (Test Set)",
                   color="white", fontsize=14, pad=14)
     ax1.grid(True, color="#21262d", linewidth=0.5)
-
-    # ── Líneas de conexión entrada → salida ──────────────────────────────────
     for t in trades:
         color = "#3fb950" if t["win"] else "#f85149"
         ax1.plot(
@@ -189,33 +151,24 @@ def plot_trades(prices, trades, equity_curve, window=None):
             [t["open_price"], t["close_price"]],
             color=color, linewidth=0.6, alpha=0.4, zorder=2
         )
-
-    # ── Entradas ─────────────────────────────────────────────────────────────
     buy_x  = [t["open_step"]  for t in trades if t["direction"] ==  1]
     sell_x = [t["open_step"]  for t in trades if t["direction"] == -1]
     buy_p  = [t["open_price"] for t in trades if t["direction"] ==  1]
     sell_p = [t["open_price"] for t in trades if t["direction"] == -1]
-
     ax1.scatter(buy_x,  buy_p,  marker="^", s=70,  color="#3fb950",
                 zorder=5, label=f"BUY  ({len(buy_x)})")
     ax1.scatter(sell_x, sell_p, marker="v", s=70,  color="#f85149",
                 zorder=5, label=f"SELL ({len(sell_x)})")
-
-    # ── Salidas ───────────────────────────────────────────────────────────────
     win_close_x  = [t["close_step"]  for t in trades if t["win"]]
     win_close_p  = [t["close_price"] for t in trades if t["win"]]
     loss_close_x = [t["close_step"]  for t in trades if not t["win"]]
     loss_close_p = [t["close_price"] for t in trades if not t["win"]]
-
     ax1.scatter(win_close_x,  win_close_p,  marker="o", s=40,
                 color="#58a6ff", zorder=4, alpha=0.8, label="Cierre ✔")
     ax1.scatter(loss_close_x, loss_close_p, marker="o", s=40,
                 color="#d29922", zorder=4, alpha=0.8, label="Cierre ✘")
-
     ax1.legend(facecolor="#161b22", edgecolor="#30363d",
                labelcolor="white", fontsize=9, loc="upper left")
-
-    # ── Equity Curve ─────────────────────────────────────────────────────────
     eq = np.array(equity_curve)
     ax2.fill_between(x, eq, 10000, where=(eq >= 10000),
                      color="#3fb950", alpha=0.3)
@@ -228,20 +181,16 @@ def plot_trades(prices, trades, equity_curve, window=None):
     ax2.yaxis.label.set_color("white")
     ax2.xaxis.label.set_color("white")
     ax2.grid(True, color="#21262d", linewidth=0.5)
-
     plt.tight_layout()
     out = "reporte_trades_visualizados.png"
     plt.savefig(out, dpi=150, facecolor=fig.get_facecolor())
     print(f"✅ Gráfico guardado → {out}")
     return fig
-
-
 def print_summary(trades):
     """Imprime estadísticas de las operaciones."""
     if not trades:
         print("⚠️  No se registraron operaciones.")
         return
-
     total  = len(trades)
     wins   = sum(1 for t in trades if t["win"])
     losses = total - wins
@@ -252,7 +201,6 @@ def print_summary(trades):
     avg_loss   = np.mean([p for p in pips if p <= 0]) if losses else 0
     buys       = sum(1 for t in trades if t["direction"] ==  1)
     sells      = sum(1 for t in trades if t["direction"] == -1)
-
     print("\n" + "═"*52)
     print("       TITANY AI — Resumen de Operaciones")
     print("═"*52)
@@ -265,14 +213,9 @@ def print_summary(trades):
     print(f"  Ganancia media    : +{avg_win:.1f} pips")
     print(f"  Pérdida media     :  {avg_loss:.1f} pips")
     print("═"*52 + "\n")
-
-    # Exportar CSV de trades
     df_t = pd.DataFrame(trades)
     df_t.to_csv("reporte_trades_detalle.csv", index=False)
     print("✅ Detalle guardado → reporte_trades_detalle.csv\n")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="TITANY AI Trade Visualizer")
     parser.add_argument("--headless", action="store_true",
@@ -280,43 +223,27 @@ def main():
     parser.add_argument("--window", type=int, default=None,
                         help="Mostrar solo las últimas N velas del test")
     args = parser.parse_args()
-
     if args.headless:
         matplotlib.use("Agg")
-
-    # ── Datos ─────────────────────────────────────────────────────────────────
     print("📂 Cargando datos...")
     df, feature_cols = load_and_preprocess_data(FILE_PATH)
     df, quant_cols   = add_quant_features(df);           feature_cols.extend(quant_cols)
     df, phys_cols    = add_physics_features(df);          feature_cols.extend(phys_cols)
     df, gold_cols    = add_golden_strategy_features(df);  feature_cols.extend(gold_cols)
     df, sniper_cols  = add_volume_sniper_features(df);   feature_cols.extend(sniper_cols)
-
-    # Mismo split Walk-Forward que el entrenamiento (Window 3)
     total_len  = len(df)
     chunk_size = total_len // 5
     test_df    = df.iloc[chunk_size*4 : total_len]
     print(f"✅ Test set: {len(test_df)} velas H1")
-
-    # ── Modelo ────────────────────────────────────────────────────────────────
     print("🧠 Cargando modelo...")
     model   = RecurrentPPO.load(MODEL_PATH)
     vec_env = build_test_env(test_df, feature_cols)
-
-    # ── Episodio ─────────────────────────────────────────────────────────────
     print("🚀 Ejecutando episodio de evaluación...")
     prices, trades, equity_curve = run_episode(vec_env, model)
     print(f"   Pasos totales: {len(prices)} | Trades: {len(trades)}")
-
-    # ── Estadísticas ─────────────────────────────────────────────────────────
     print_summary(trades)
-
-    # ── Gráfico ───────────────────────────────────────────────────────────────
     fig = plot_trades(prices, trades, equity_curve, window=args.window)
-
     if not args.headless:
         plt.show()
-
-
 if __name__ == "__main__":
     main()
