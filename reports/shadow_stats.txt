@@ -1,4 +1,4 @@
-total_timesteps | 10000188
+total_timesteps | 10000134
 iterations | 1
 fps | 145
 ------------------------------

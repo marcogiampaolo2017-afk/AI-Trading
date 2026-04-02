@@ -1185,9 +1185,14 @@ class TitanyBotApp(ctk.CTk):
                                      allow_entry = False
                                      if int(time.time()) % 30 == 0:
                                          self.add_log(f"🚫 ANTI-COHETE: BUY bloqueado ({last_ma50_diff*10000:.0f}p bajo MA50)")
-                                 elif h4_bull and res[1] == 1 and last_ma50_diff < 0:
+                                 elif res[1] == 0 and last_ma50_diff < -0.0040:
+                                     allow_entry = False
                                      if int(time.time()) % 30 == 0:
-                                         self.add_log(f"🎯 DIP-BUY: corrección {last_ma50_diff*10000:.0f}p — macro alcista. Comprando.")
+                                         self.add_log(f"🚫 FOMO: SELL bloqueado, el precio ya cayó demasiado ({last_ma50_diff*10000:.0f}p bajo MA50)")
+                                 elif res[1] == 1 and last_ma50_diff > 0.0040:
+                                     allow_entry = False
+                                     if int(time.time()) % 30 == 0:
+                                         self.add_log(f"🚫 FOMO: BUY bloqueado, el precio ya subió demasiado (+{last_ma50_diff*10000:.0f}p sobre MA50)")
                         if res[0] == "OPEN" and allow_entry:
                             last_pa_eng = df_p["pa_engulfing"].iloc[-1] if "pa_engulfing" in df_p.columns else 0
                             last_pa_pin = df_p["pa_pinbar"].iloc[-1] if "pa_pinbar" in df_p.columns else 0
@@ -1195,20 +1200,14 @@ class TitanyBotApp(ctk.CTk):
                             last_ict_sw = df_p["ict_sweep"].iloc[-1] if "ict_sweep" in df_p.columns else 0
                             if res[1] == 0:       
                                 if last_pa_pin == 1 or last_pa_eng == 1:
-                                    if h4_bear and h4_gap < -40:
-                                        pass # Ignorar rechazo alcista en caída libre constante
-                                    else:
-                                        allow_entry = False
-                                        if int(time.time()) % 30 == 0:
-                                            self.add_log("👁️ VISION 360: Bloqueando VENTA. Rechazo Alcista (Pinbar/Engulfing).")
+                                    allow_entry = False
+                                    if int(time.time()) % 30 == 0:
+                                        self.add_log("👁️ VISION 360: Bloqueando VENTA. Rechazo Alcista (Pinbar/Engulfing).")
                             elif res[1] == 1:      
                                 if last_pa_pin == -1 or last_pa_eng == -1:
-                                    if h4_bull and h4_gap > 40:
-                                        pass # Ignorar rechazo bajista en subida libre constante
-                                    else:
-                                        allow_entry = False
-                                        if int(time.time()) % 30 == 0:
-                                            self.add_log("👁️ VISION 360: Bloqueando COMPRA. Rechazo Bajista (Pinbar/Engulfing).")
+                                    allow_entry = False
+                                    if int(time.time()) % 30 == 0:
+                                        self.add_log("👁️ VISION 360: Bloqueando COMPRA. Rechazo Bajista (Pinbar/Engulfing).")
                             if allow_entry:
                                 if res[1] == 0:       
                                     if last_ict_fvg == 1 or last_ict_sw == 1:
