@@ -1098,47 +1098,96 @@ class TitanyBotApp(ctk.CTk):
                         self.after(0, lambda obs=final_obs, act=act_item, df=df_p.tail(1): 
                                    self._log_market_experience(obs, act, df))
                         if res[0] == "OPEN":
-                             current_atr = float(df_p["atr_14"].iloc[-1]) if "atr_14" in df_p.columns else 0.001
-                             market_entropy = self.neuro_engine.calculate_entropy(df_p["Close"].values)
-                             sample_actions = [res]
-                             res = self.neuro_engine.quantum_energy_filter(sample_actions, current_atr, market_entropy)
-                        allow_entry = True
-                        if last_fer < 0.30:
-                            if abs(last_z) < 1.2: 
-                                allow_entry = False
-                                if int(time.time()) % 60 == 0:
-                                    self.add_log("🛡️ FILTRO LAZARUS: Esperando mejor setup (FER<0.30 | Z<1.2).")
-                        vsa_confirm = False
-                        if "vsa_ratio_norm" in df_p.columns:
-                            last_vsa = df_p["vsa_ratio_norm"].iloc[-1]
-                            if last_vsa > 1.1:
-                                vsa_confirm = True
-                        if res[0] == "OPEN" and not vsa_confirm:
-                            allow_entry = False
-                            if int(time.time()) % 60 == 0:
-                                self.add_log(f"🕵️ VSA FILTER: Bloqueando entrada. Volumen débil ({last_vsa:.2f} < 1.1)")
-                        if res[0] == "OPEN" and allow_entry:
-                            if res[1] == 1:      
-                                if last_z10 > 3.0:
-                                    allow_entry = False
-                                    if int(time.time()) % 60 == 0:
-                                        self.add_log(f"📉 REVERSIÓN FILTER: Bloqueando COMPRA en techo extremo (Z10={last_z10:.2f} > 3.0)")
-                            else:       
-                                if last_z10 < -3.0:
-                                    allow_entry = False
-                                    if int(time.time()) % 60 == 0:
-                                        self.add_log(f"📈 REVERSIÓN FILTER: Bloqueando VENTA en caída libre extrema (Z10={last_z10:.2f} < -3.0)")
-                        if res[0] == "OPEN" and allow_entry:
-                            if "close_ma50_diff" in df_p.columns:
-                                last_ma50_diff = df_p["close_ma50_diff"].iloc[-1]
-                                if last_ma50_diff > 0.0025 and res[1] == 0:  
-                                    allow_entry = False
-                                    if int(time.time()) % 30 == 0:
-                                        self.add_log(f"🚫 ANTI-COHETE: Bloqueando VENTA. Gran tendencia alcista detectada (+{last_ma50_diff*10000:.0f} pips sobre media).")
-                                elif last_ma50_diff < -0.0025 and res[1] == 1:
-                                    allow_entry = False
-                                    if int(time.time()) % 30 == 0:
-                                        self.add_log(f"🚫 ANTI-COHETE: Bloqueando COMPRA. Caída libre detectada ({last_ma50_diff*10000:.0f} pips bajo media).")
+                         # ══════════════════════════════════════════════════════════
+                         # 🌊 PASO 0: CONTEXTO MACRO H4 — Se calcula PRIMERO
+                         # ══════════════════════════════════════════════════════════
+                         h4_bull = False  # EMA50 > EMA200 +15p → macro alcista
+                         h4_bear = False  # EMA50 < EMA200 -15p → macro bajista
+                         h4_gap  = 0.0   # pips entre EMA50 y EMA200 (+ = alcista)
+                         try:
+                             _r4 = mt5.copy_rates_from_pos(SYMBOL, mt5.TIMEFRAME_H4, 0, 220)
+                             if _r4 is not None and len(_r4) >= 200:
+                                 _c4   = pd.DataFrame(_r4)["close"]
+                                 _e50  = _c4.ewm(span=50,  adjust=False).mean().iloc[-1]
+                                 _e200 = _c4.ewm(span=200, adjust=False).mean().iloc[-1]
+                                 h4_gap  = (_e50 - _e200) / 0.0001
+                                 h4_bull = h4_gap  >  15
+                                 h4_bear = h4_gap  < -15
+                         except:
+                             pass
+                         allow_entry = True
+                         if last_fer < 0.30:
+                             if abs(last_z) < 1.2:
+                                 allow_entry = False
+                                 if int(time.time()) % 60 == 0:
+                                     self.add_log("🛡️ FILTRO LAZARUS: Esperando mejor setup (FER<0.30 | Z<1.2).")
+                         vsa_confirm = False
+                         if "vsa_ratio_norm" in df_p.columns:
+                             last_vsa = df_p["vsa_ratio_norm"].iloc[-1]
+                             if last_vsa > 1.1:
+                                 vsa_confirm = True
+                             elif abs(h4_gap) > 40:  # Tendencia macro muy fuerte: umbral VSA reducido
+                                 vsa_confirm = last_vsa > 0.40
+                         if res[0] == "OPEN" and not vsa_confirm:
+                             allow_entry = False
+                             if int(time.time()) % 60 == 0:
+                                 self.add_log(f"🕵️ VSA FILTER: Volumen débil ({last_vsa:.2f}) | H4={h4_gap:.0f}p")
+                         # ─── REVERSIÓN / MOMENTUM (ajustado al contexto H4) ──────────
+                         if res[0] == "OPEN" and allow_entry:
+                             if res[1] == 1:   # === BUY ===
+                                 if h4_bear and last_z10 >= 0.0:  # Macro bajista: bloquear BUY salvo reversión profunda
+                                     allow_entry = False
+                                     if int(time.time()) % 60 == 0:
+                                         self.add_log(f"📉 MACRO-BEAR: BUY bloqueado (Z10={last_z10:.2f}, H4={h4_gap:.0f}p)")
+                                 elif last_z10 > 3.5:
+                                     allow_entry = False
+                                     if int(time.time()) % 60 == 0:
+                                         self.add_log(f"📉 REVERSIÓN: BUY en techo extremo (Z10={last_z10:.2f})")
+                             else:   # === SELL ===
+                                 if h4_bull:
+                                     if last_z10 >= -3.5:  # Macro alcista: bloquear SELL salvo caída muy extrema
+                                         allow_entry = False
+                                         if int(time.time()) % 60 == 0:
+                                             self.add_log(f"🌊 MACRO-BULL: SELL bloqueado (Z10={last_z10:.2f}, H4=+{h4_gap:.0f}p)")
+                                     else:
+                                         _lc, _pc = df_p['Close'].iloc[-1], df_p['Close'].iloc[-2]
+                                         if _lc > _pc:
+                                             allow_entry = False
+                                             if int(time.time()) % 60 == 0:
+                                                 self.add_log(f"📈 MACRO-BULL: SELL bloqueado, rebote iniciado (Z10={last_z10:.2f})")
+                                         else:
+                                             if int(time.time()) % 60 == 0:
+                                                 self.add_log(f"⚡ MOMENTUM SELL (bull track, Z10={last_z10:.2f}, H4=+{h4_gap:.0f}p)")
+                                 elif last_z10 < -4.0:
+                                     _lc, _pc = df_p['Close'].iloc[-1], df_p['Close'].iloc[-2]
+                                     if _lc > _pc:
+                                         allow_entry = False
+                                         if int(time.time()) % 60 == 0:
+                                             self.add_log(f"📈 REVERSIÓN: SELL bloqueado, rebote confirmado (Z10={last_z10:.2f})")
+                                     else:
+                                         if int(time.time()) % 60 == 0:
+                                             self.add_log(f"⚡ MOMENTUM SELL: Z10={last_z10:.2f} sin rebote.")
+                         # ─── ANTI-COHETE (umbrales dinámicos según macro H4) ──────────
+                         if res[0] == "OPEN" and allow_entry:
+                             if "close_ma50_diff" in df_p.columns:
+                                 last_ma50_diff = df_p["close_ma50_diff"].iloc[-1]
+                                 if h4_bull:
+                                     sell_thr, buy_thr = 0.0015, -0.0050  # Bull: DIP-BUY hasta -50p, SELL bloqueado desde +15p
+                                 elif h4_bear:
+                                     sell_thr, buy_thr = 0.0050, -0.0015  # Bear: RALLY-SELL hasta +50p, BUY bloqueado desde -15p
+                                 else:
+                                     sell_thr, buy_thr = 0.0025, -0.0025  # Neutral: umbrales originales
+                                 if last_ma50_diff > sell_thr and res[1] == 0:
+                                     allow_entry = False
+                                     if int(time.time()) % 30 == 0:
+                                         self.add_log(f"🚫 ANTI-COHETE: SELL bloqueado (+{last_ma50_diff*10000:.0f}p sobre MA50)")
+                                 elif last_ma50_diff < buy_thr and res[1] == 1:
+                                     allow_entry = False
+                                     if int(time.time()) % 30 == 0:
+                                         self.add_log(f"🚫 ANTI-COHETE: BUY bloqueado ({last_ma50_diff*10000:.0f}p bajo MA50)")
+                                 elif h4_bull and res[1] == 1 and last_ma50_diff < 0:
+                                     if int(time.time()) % 30 == 0:
+                                         self.add_log(f"🎯 DIP-BUY: corrección {last_ma50_diff*10000:.0f}p — macro alcista. Comprando.")
                         if res[0] == "OPEN" and allow_entry:
                             last_pa_eng = df_p["pa_engulfing"].iloc[-1] if "pa_engulfing" in df_p.columns else 0
                             last_pa_pin = df_p["pa_pinbar"].iloc[-1] if "pa_pinbar" in df_p.columns else 0
@@ -1146,14 +1195,20 @@ class TitanyBotApp(ctk.CTk):
                             last_ict_sw = df_p["ict_sweep"].iloc[-1] if "ict_sweep" in df_p.columns else 0
                             if res[1] == 0:       
                                 if last_pa_pin == 1 or last_pa_eng == 1:
-                                    allow_entry = False
-                                    if int(time.time()) % 30 == 0:
-                                        self.add_log("👁️ VISION 360: Bloqueando VENTA. Rechazo Alcista (Pinbar/Engulfing).")
+                                    if h4_bear and h4_gap < -40:
+                                        pass # Ignorar rechazo alcista en caída libre constante
+                                    else:
+                                        allow_entry = False
+                                        if int(time.time()) % 30 == 0:
+                                            self.add_log("👁️ VISION 360: Bloqueando VENTA. Rechazo Alcista (Pinbar/Engulfing).")
                             elif res[1] == 1:      
                                 if last_pa_pin == -1 or last_pa_eng == -1:
-                                    allow_entry = False
-                                    if int(time.time()) % 30 == 0:
-                                        self.add_log("👁️ VISION 360: Bloqueando COMPRA. Rechazo Bajista (Pinbar/Engulfing).")
+                                    if h4_bull and h4_gap > 40:
+                                        pass # Ignorar rechazo bajista en subida libre constante
+                                    else:
+                                        allow_entry = False
+                                        if int(time.time()) % 30 == 0:
+                                            self.add_log("👁️ VISION 360: Bloqueando COMPRA. Rechazo Bajista (Pinbar/Engulfing).")
                             if allow_entry:
                                 if res[1] == 0:       
                                     if last_ict_fvg == 1 or last_ict_sw == 1:
@@ -1165,27 +1220,6 @@ class TitanyBotApp(ctk.CTk):
                                         allow_entry = False
                                         if int(time.time()) % 30 == 0:
                                             self.add_log("🏛️ ICT FILTER: Bloqueando COMPRA. Precio rebotando en Liquidity Sweep o FVG Bajista.")
-                        if res[0] == "OPEN" and allow_entry:
-                            try:
-                                rates_h4 = mt5.copy_rates_from_pos(SYMBOL, mt5.TIMEFRAME_H4, 0, 220)
-                                if rates_h4 is not None and len(rates_h4) >= 200:
-                                    import pandas as pd_macro
-                                    df_h4 = pd_macro.DataFrame(rates_h4)
-                                    closes_h4 = df_h4["close"]
-                                    ema50_h4  = closes_h4.ewm(span=50,  adjust=False).mean().iloc[-1]
-                                    ema200_h4 = closes_h4.ewm(span=200, adjust=False).mean().iloc[-1]
-                                    pip_size  = 0.0001
-                                    trend_gap_pips = (ema50_h4 - ema200_h4) / pip_size                                      
-                                    if trend_gap_pips < -20 and res[1] == 1:                            
-                                        allow_entry = False
-                                        if int(time.time()) % 60 == 0:
-                                            self.add_log(f"🌊 MACRO TREND: Bloqueando COMPRA en TENDENCIA BAJISTA (EMA50-EMA200={trend_gap_pips:.1f}p).")
-                                    elif trend_gap_pips > 20 and res[1] == 0:                             
-                                        allow_entry = False
-                                        if int(time.time()) % 60 == 0:
-                                            self.add_log(f"🌊 MACRO TREND: Bloqueando VENTA en TENDENCIA ALCISTA (EMA50-EMA200={trend_gap_pips:.1f}p).")
-                            except Exception as e_macro:
-                                pass                                   
                         if res[0] == "OPEN" and allow_entry and getattr(self, "genetic_ai", None):
                             gen_signal = self.genetic_ai.get_signal()
                             if gen_signal != 0.0:
@@ -1201,7 +1235,15 @@ class TitanyBotApp(ctk.CTk):
                             try:
                                 past_closes = df_p['Close'].values[-14:]
                                 atr_m = (max(past_closes) - min(past_closes)) if len(past_closes) > 0 else 0.0010
-                                drift = -last_z10 * (atr_m * 0.1)
+                                # H4 macro tiene prioridad sobre Z10 mean-reversion
+                                if h4_bull and res[1] == 1:
+                                    drift = (abs(h4_gap) * 0.000001) + (atr_m * 0.08)   # BUY en macro alcista: drift positivo
+                                elif h4_bear and res[1] == 0:
+                                    drift = -((abs(h4_gap) * 0.000001) + (atr_m * 0.08)) # SELL en macro bajista: drift negativo
+                                elif (last_z10 < -2.0 and res[1] == 0) or (last_z10 > 2.0 and res[1] == 1):
+                                    drift = last_z10 * (atr_m * 0.05)   # Momentum Z10
+                                else:
+                                    drift = -last_z10 * (atr_m * 0.1)   # Mean-reversion estándar
                                 hits_sl = 0
                                 sl_dist = min(20.0, float(res[2])) / 10000.0
                                 for _ in range(300):
@@ -1212,17 +1254,20 @@ class TitanyBotApp(ctk.CTk):
                                     else:       
                                         if np.max(path) >= sl_dist: hits_sl += 1
                                 prob_muerte = hits_sl / 300.0
-                                if prob_muerte > 0.50:
+                                if prob_muerte > 0.55:
                                     allow_entry = False
                                     if int(time.time()) % 30 == 0:
-                                        self.add_log(f"🌌 MULTIVERSO: Poda Temporal. En el {int(prob_muerte*100)}% de los mundos esto toca Stop Loss.")
+                                        self.add_log(f"🌌 MULTIVERSO: {int(prob_muerte*100)}% prob SL — entrada cancelada.")
+                                else:
+                                    if int(time.time()) % 60 == 0:
+                                        self.add_log(f"🌌 MULTIVERSO: {int((1-prob_muerte)*100)}% supervivencia ✓ | H4={h4_gap:.0f}p")
                             except Exception as e:
                                 pass
                         time_since_last = time.time() - last_trade_time
-                        if allow_entry and n_pos < MAX_POSITIONS and time_since_last < 60:
+                        if allow_entry and n_pos < MAX_POSITIONS and time_since_last < 300:
                             allow_entry = False                                  
                             if int(time.time()) % 30 == 0:
-                                self.add_log(f"⏳ COOLDOWN: Esperando {int(60 - time_since_last)}s.")
+                                 self.add_log(f"⏳ COOLDOWN: Esperando {int(300 - time_since_last)}s para evitar ráfagas en misma vela.")
                         # 🛡️ FIX: Bloquear entrada si la meta diaria ya fue alcanzada
                         if self.meta_diaria_alcanzada:
                             allow_entry = False
