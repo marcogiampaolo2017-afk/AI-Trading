@@ -94,9 +94,15 @@ class TestEnvInit:
 
     def test_action_space_size(self):
         env = _make_env()
-        # HOLD + CLOSE + 2 directions * n_sl * n_tp
-        expected = 2 + 2 * len(_SL_OPTS) * len(_TP_OPTS)
-        assert env.action_space.n == expected
+        # HOLD + (CLOSE si ALLOW_MANUAL_CLOSE) + 2 directions * n_sl * n_tp
+        # Con ALLOW_MANUAL_CLOSE=False (convención del proyecto): 1 + 2*n_sl*n_tp
+        import config as _cfg
+        n_sl_tp = len(_SL_OPTS) * len(_TP_OPTS)
+        expected = (2 if _cfg.ALLOW_MANUAL_CLOSE else 1) + 2 * n_sl_tp
+        assert env.action_space.n == expected, (
+            f"Action space: got {env.action_space.n}, expected {expected} "
+            f"(ALLOW_MANUAL_CLOSE={_cfg.ALLOW_MANUAL_CLOSE}, SL opts={_SL_OPTS}, TP opts={_TP_OPTS})"
+        )
 
     def test_short_df_raises(self):
         tiny_df = _make_random_df(n=_WIN + 1)   # exactly 1 row margin → should raise
