@@ -12,10 +12,12 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 import datetime
 import subprocess
+import random
 from PIL import Image                                                
 import queue                 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from env import indicators
+import config   # shared SL_TP_PAIRS and constants — must match training
 import json
 from tkinter import messagebox
 class AcademyWindow(ctk.CTkToplevel):
@@ -213,8 +215,10 @@ RESTART_DELAY = 180
 WIN = 30
 INTEGRITY_TARGET = 100.0                                              
 INTEGRITY_MIN_PROFIT = 0.15  # Ganancia mínima sobre el target para activar el cierre (evita falsos disparos por el spread)
-SL_OPTS = [10, 20, 30, 50, 80, 100]
-TP_OPTS = [10, 20, 30, 50, 80, 100]
+# Action space MUST match training — use config.SL_TP_PAIRS
+# (old Cartesian [10,20,30,50,80,100]×[10,20,30,50,80,100] = 74 actions caused wrong trades)
+SL_OPTS = config.SL_OPTIONS   # derived from SL_TP_PAIRS for display purposes
+TP_OPTS = config.TP_OPTIONS    # derived from SL_TP_PAIRS for display purposes
 BOT_MODE = 2 
 class TitanySync:
     def __init__(self, url, key, row_id):
@@ -342,14 +346,22 @@ class NeuroQuantEngine:
         k_safe = k_full * 0.2
         potential_lot = (balance * k_safe) / 3000                      
         return max(base_lot, round(potential_lot, 2))
-    def adapt_synapses(self, won_last_trade):
+    def adapt_synapses(self, won_last_trade, congruent=True):
         """
         Simula Plasticidad Sináptica (Hebbian Learning).
+        Si hubo confrontación (IA vs Genética), el ajuste es más violento.
         """
+        multiplier = 1.0 if congruent else 2.5 # Castigo/Premio extra si desafió al destino
+        
         if won_last_trade:
-            self.synaptic_weight = min(2.0, self.synaptic_weight * 1.1)                     
+            # Si ganó desafiando al Dorado, la IA es una "Leyenda", sube mucho la confianza
+            step = 1.1 if congruent else 1.25
+            self.synaptic_weight = min(3.0, self.synaptic_weight * step)                     
         else:
-            self.synaptic_weight = max(0.5, self.synaptic_weight * 0.8)                  
+            # Si perdió ignorando al Dorado, el castigo es masivo
+            step = 0.8 if congruent else 0.5
+            self.synaptic_weight = max(0.2, self.synaptic_weight * step)                  
+        
         self._save_memory()                                   
         return self.synaptic_weight
     def quantum_energy_filter(self, actions_list, current_atr, entropy):
@@ -395,6 +407,7 @@ class TitanyBotApp(ctk.CTk):
         except Exception as e:
             print(f"⚠️ Error al inyectar Genoma Evolutivo: {e}")
             self.genetic_ai = None
+        self._last_msg_time = {}  # 🛡️ Debounce para evitar logs repetidos
         try:
             from titany_multiverse import MultiverseUI
             self.add_log("🕷️ MULTIVERSO CUÁNTICO: Instanciado en background.")
@@ -418,15 +431,28 @@ class TitanyBotApp(ctk.CTk):
             self.add_log(f"⚠️ Shadow Trainer: {e}")
         self.last_terminal_sync = "📡 [AGA-MORA] SYNC: Esperando datos..."
         self.last_terminal_quant = "🧠 [AGA-MORA] QUANT: Esperando datos..."
-        self.running = True                                              
+        self.running = True
+        # FIX: create the queue BEFORE starting the bot thread so the thread
+        # can safely call _dispatch() / add_log() from the very first line.
+        self.log_queue = queue.Queue()
+        self.training_process = None
         self.setup_ui()
         self.bot_thread = threading.Thread(target=self.run_bot_logic, daemon=True)
         self.bot_thread.start()
-        self.log_queue = queue.Queue()
-        self.training_process = None                                          
         self._check_log_queue()
         self.update_time()
         self.animate_neural()
+        
+        # Estado de Confrontación Genética
+        self.golden_bias = 0 # 1=Buy, -1=Sell, 0=Neutral
+        self.golden_path = None
+        self.prediction_locked = False
+        self.lock_price = 0
+        self.was_congruent = True # Si la última operación abrió a favor del Dorado
+        self.meta_diaria_alcanzada = False
+        self.golden_checkpoints = {'highs': [], 'lows': []}
+        self.prophecy_name = "ESPERANDO DESTINO"
+        self.prophecy_success_count = 0
     def _load_equity_history(self):
         """Carga el gráfico histórico para verlo el sábado."""
         try:
@@ -604,14 +630,42 @@ class TitanyBotApp(ctk.CTk):
         self.setup_chart_style()
         self.canvas = FigureCanvasTkAgg(self.fig, master=tab_equity)
         self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=10)
-        self.fig_mv = Figure(figsize=(10, 3), dpi=100, facecolor=self.colors["bg_card"])
+        # --- MULTIVERSE SPLIT LAYOUT ---
+        multi_container = ctk.CTkFrame(tab_multi, fg_color="transparent")
+        multi_container.pack(fill="both", expand=True)
+        
+        mv_chart_frame = ctk.CTkFrame(multi_container, fg_color="transparent")
+        mv_chart_frame.pack(side="left", fill="both", expand=True)
+        
+        self.mv_stats_frame = ctk.CTkFrame(multi_container, fg_color="#0d1117", corner_radius=10, width=220)
+        # ⚠️ COMENTADO A PETICIÓN DEL USUARIO HASTA QUE TERMINE LA IDEA
+        # self.mv_stats_frame.pack(side="right", fill="y", padx=(10, 0), pady=10)
+        # self.mv_stats_frame.pack_propagate(False)
+
+        # Labels del Sidebar del Multiverso
+        ctk.CTkLabel(self.mv_stats_frame, text="🔮 PROFECÍA ACTIVA", font=("Segoe UI", 11, "bold"), text_color=self.colors["accent_purple"]).pack(pady=(15,0))
+        self.lbl_profecia = ctk.CTkLabel(self.mv_stats_frame, text="---", font=("Consolas", 12), text_color="#FFD700")
+        self.lbl_profecia.pack(pady=(2,15))
+
+        ctk.CTkLabel(self.mv_stats_frame, text="🧬 SESGO GENÉTICO", font=("Segoe UI", 10), text_color=self.colors["text_secondary"]).pack()
+        self.lbl_genetica = ctk.CTkLabel(self.mv_stats_frame, text="0%", font=("Segoe UI", 18, "bold"), text_color=self.colors["accent_cyan"])
+        self.lbl_genetica.pack(pady=(0,15))
+
+        ctk.CTkLabel(self.mv_stats_frame, text="✅ ÉXITOS DE SENDA", font=("Segoe UI", 10), text_color=self.colors["text_secondary"]).pack()
+        self.lbl_sincronia = ctk.CTkLabel(self.mv_stats_frame, text="0", font=("Segoe UI", 18, "bold"), text_color=self.colors["accent_green"])
+        self.lbl_sincronia.pack(pady=(0,15))
+
+        self.lbl_checkpoint = ctk.CTkLabel(self.mv_stats_frame, text="STATUS: MONITOREANDO", font=("Segoe UI", 10, "bold"), text_color=self.colors["text_secondary"])
+        self.lbl_checkpoint.pack(side="bottom", pady=15)
+
+        self.fig_mv = Figure(figsize=(8, 3), dpi=100, facecolor=self.colors["bg_card"])
         self.ax_mv = self.fig_mv.add_subplot(111)
         self.ax_mv.set_facecolor(self.colors["bg_card"])
         self.ax_mv.tick_params(colors=self.colors["text_secondary"], labelsize=8)
         for spine in ['top', 'right']: self.ax_mv.spines[spine].set_visible(False)
         for spine in ['left', 'bottom']: self.ax_mv.spines[spine].set_color(self.colors["border_subtle"])
-        self.canvas_mv = FigureCanvasTkAgg(self.fig_mv, master=tab_multi)
-        self.canvas_mv.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=10)
+        self.canvas_mv = FigureCanvasTkAgg(self.fig_mv, master=mv_chart_frame)
+        self.canvas_mv.get_tk_widget().pack(fill="both", expand=True, padx=5, pady=5)
         bottom_frame = ctk.CTkFrame(content, fg_color="transparent", height=140)
         bottom_frame.pack(fill="x")
         bottom_frame.pack_propagate(False)
@@ -668,7 +722,8 @@ class TitanyBotApp(ctk.CTk):
         if self.running:
             self.after(2000, self.animate_neural)
     def update_ui_chart(self, val):
-        self.after(0, lambda: self._perform_ui_update(val))
+        # FIX: _dispatch is thread-safe; direct self.after(0,...) crashes from bg threads
+        self._dispatch(lambda: self._perform_ui_update(val))
     def _perform_ui_update(self, val):
         if not self.running: return
         try:
@@ -696,10 +751,25 @@ class TitanyBotApp(ctk.CTk):
             os.makedirs(memory_dir, exist_ok=True)
             exp_file = os.path.join(memory_dir, "market_experience.csv")
             ts = int(time.time())
-            close_price = df_p["Close"].iloc[-1]
+            
+            # Extraer info para el Shadow Teacher (Internalización de Filtros)
+            ict_fvg = df_p["ict_fvg"].iloc[-1] if "ict_fvg" in df_p.columns else 0
+            ict_sw = df_p["ict_sweep"].iloc[-1] if "ict_sweep" in df_p.columns else 0
+            last_fer = df_p["quant_fer"].iloc[-1] if "quant_fer" in df_p.columns else 0.3
+            last_vsa = df_p["vsa_ratio_norm"].iloc[-1] if "vsa_ratio_norm" in df_p.columns else 1.0
+            
+            # Anti-Parabólica (Relative Close)
+            last_c, last_h, last_l = df_p['Close'].iloc[-1], df_p['High'].iloc[-1], df_p['Low'].iloc[-1]
+            c_range = last_h - last_l
+            rel_cl = (last_c - last_l) / c_range if c_range > 0 else 0.5
+
+            close_price = last_c
             obs_flat = final_obs.flatten().tolist()
-            obs_str = "|".join([f"{x:.4f}" for x in obs_flat])
-            row = f"{ts},{action_index},{close_price},{obs_str}\n"
+            obs_str = "|".join([f"{x:.5f}" for x in obs_flat])
+            
+            # Formato extendido: ts;action;close;ict_fvg;ict_sw;rel_cl;fer;vsa;obs
+            row = f"{ts};{action_index};{close_price};{ict_fvg};{ict_sw};{rel_cl:.4f};{last_fer:.4f};{last_vsa:.4f};{obs_str}\n"
+            
             with open(exp_file, "a", encoding="utf-8") as f:
                 f.write(row)
         except Exception:
@@ -761,71 +831,91 @@ class TitanyBotApp(ctk.CTk):
         """
         if not mt5.initialize():
             self.add_log("❌ MT5 no conectado.")
-            self.after(0, lambda: self.lbl_mt5.configure(text="MARKET: OFFLINE", text_color="#ef4444"))
+            self._dispatch(lambda: self.lbl_mt5.configure(text="MARKET: OFFLINE", text_color="#ef4444"))
             return
         model = None
-        v_env = None
         try:
             root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             models_dir = os.path.join(root_dir, "models")
-            best_m_path = os.path.join(models_dir, "best_model.zip")
-            model_name = "model_eurusd_titany_v12_sniper.zip"
-            model_path = os.path.join(models_dir, model_name)
-            if os.path.exists(best_m_path):
-                model_path = best_m_path
-                self.add_log("🎓 AI: Cargando mejor modelo detectado en la ACADEMIA.")
-            from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-            SL_OPTS_L = [10, 20, 30, 50, 80, 100]
-            TP_OPTS_L = [10, 20, 30, 50, 80, 100]
-            if model_path == best_m_path:
-                SL_OPTS_L = [20, 50, 100]
-                TP_OPTS_L = [40, 100, 200]
-            def dummy_env_adaptive():
-                from env.trading_env import ForexTradingEnv
-                n_ind = 26 if "v12_sniper" in model_name else (23 if "v10" in model_name else 21)
-                return ForexTradingEnv(pd.DataFrame(np.zeros((100, n_ind))), window_size=30, sl_options=SL_OPTS_L, tp_options=TP_OPTS_L)
-            v_env = DummyVecEnv([dummy_env_adaptive])
-            norm_path = os.path.join(models_dir, "vec_normalize.pkl")
-            if os.path.exists(norm_path):
+            
+            # === CARGA LIMPIA PARA INFERENCIA (sin env = sin conflicto de obs space) ===
+            # Para model.predict() no necesitamos un entorno, solo los pesos de la red.
+            model_candidates = [
+                "model_eurusd_titany_v13_live.zip",
+                "model_eurusd_titany_v12_sniper.zip",
+                "model_eurusd_titany_v10_golden.zip",
+                "backup_profitable_model_20260129_182013.zip",
+            ]
+            model = None
+            for candidate in model_candidates:
+                cpath = os.path.join(models_dir, candidate)
+                if not os.path.exists(cpath):
+                    continue
                 try:
-                    v_env = VecNormalize.load(norm_path, v_env)
-                    v_env.training = False 
-                    v_env.norm_reward = False
-                except:
-                    self.add_log("⚠️ AI: VecNormalize incompatible para esta arquitectura.")
-            else:
-                self.add_log("ℹ️ AI: Sin archivo de normalización. Usando modo RAW.")
-            model = RecurrentPPO.load(model_path, env=v_env)
-            self.add_log(f"💎 AI: MODELO {os.path.basename(model_name)} cargado con éxito.")
+                    # Cargar SIN env: evita toda comparación de obs_space. Perfecto para inferencia.
+                    model = RecurrentPPO.load(cpath, device="cpu")
+                    n_ind_loaded = model.observation_space.shape[-1]
+                    self.add_log(f"💎 AI: [{candidate}] cargado — obs({model.observation_space.shape}) ✓")
+                    break
+                except Exception as e_c:
+                    self.add_log(f"⚠️ AI: [{candidate}] falló: {e_c}")
+            
+            if model is None:
+                self.add_log("❌ AI: Sin modelos válidos. El bot se detendrá.")
+                return
         except Exception as e:
-            self.add_log(f"⚠️ AI: Error carga primaria ({e}). Probando compatibilidad V7 Survivor...")
-            try:
-                def dummy_env_v7():
-                    from env.trading_env import ForexTradingEnv
-                    return ForexTradingEnv(pd.DataFrame(np.zeros((100, 21))), window_size=30, sl_options=SL_OPTS_L, tp_options=TP_OPTS_L)
-                v_env = DummyVecEnv([dummy_env_v7])
-                model_path_bkp = os.path.join(models_dir, "best_models", "best_model.zip")
-                if os.path.exists(os.path.join(models_dir, "model_eurusd_titany_v7_survivor.zip")):
-                     model_path_bkp = os.path.join(models_dir, "model_eurusd_titany_v7_survivor.zip")
-                model = RecurrentPPO.load(model_path_bkp, env=v_env)
-                self.add_log(f"💎 AI: MODELO V7 SURVIVOR (Backup) cargado.")
-            except Exception as e2:
-                 self.add_log(f"❌ AI: CRITICAL - FALLO TOTAL DE CARGA: {e2}")
+            self.add_log(f"❌ AI: Error crítico en carga: {e}")
+            return
         try:
              self.model_features = model.observation_space.shape[-1]
-             self.add_log(f"🧠 ARQUITECTURA DETECTADA: {self.model_features} Neuronas de Entrada.")
+             self.add_log(f"🧠 ARQUITECTURA DETECTADA: {self.model_features} cols de entrada.")
         except:
-             self.model_features = 24             
-        actions = [("HOLD", 0,0,0), ("CLOSE", 0,0,0)]
+             self.model_features = 30  # V12 Sniper: 27 features + 3 state
+
+        # Load VecNormalize stats for observation normalisation.
+        # The model was trained with VecNormalize(norm_obs=True) so raw observations
+        # need to be normalised before prediction, otherwise scales are wrong.
+        self._obs_mean = None
+        self._obs_std  = None
+        try:
+            norm_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "models", "vec_normalize.pkl"
+            )
+            if os.path.exists(norm_path):
+                import pickle
+                with open(norm_path, "rb") as _f:
+                    _vn = pickle.load(_f)
+                self._obs_mean = _vn.obs_rms.mean   # shape (win, n_feat)
+                self._obs_std  = np.sqrt(_vn.obs_rms.var + 1e-8)
+                self.add_log("📐 VecNormalize: estadísticas de normalización cargadas.")
+        except Exception as _ve:
+            self.add_log(f"⚠️ VecNormalize no disponible ({_ve}). Usando obs. crudas.")
+        # Build action map EXACTLY as in training (config.SL_TP_PAIRS, no CLOSE).
+        # Critical: action index 0=HOLD, 1=OPEN_BUY(sl,tp), 2=OPEN_SELL(sl,tp), ...
+        # If CLOSE was here (old code) → action 1 was CLOSE, action 2 was a wrong OPEN.
+        actions = [("HOLD", 0, 0, 0)]
+        if config.ALLOW_MANUAL_CLOSE:
+            actions.append(("CLOSE", 0, 0, 0))
         for d in [0, 1]:
-            for sl in SL_OPTS_L:
-                for tp in TP_OPTS_L:
-                    actions.append(("OPEN", d, float(sl), float(tp)))
+            for sl, tp in config.SL_TP_PAIRS:
+                actions.append(("OPEN", d, float(sl), float(tp)))
         last_sync_time = 0
         last_trade_time = self.neuro_engine.last_trade_time                     
         last_balance = 0
+        profit = 0.0          # FIX: initialize before first acc read to avoid UnboundLocalError
+        self.last_loss_time = 0  # ⏳ Escudo: Tiempo del último golpe
         cycle_count = 0
         self.meta_diaria_alcanzada = False  # 🛡️ FIX: flag para bloquear entradas tras alcanzar la meta diaria
+        self._day_equity_start = 0.0  # 📊 Seguimiento del equity al iniciar el día para detectar pérdidas catastróficas heredadas
+        # FIX: inicializar flags de meta aquí para que daily reset funcione desde el primer ciclo
+        self._meta_fecha_hoy = ''
+        self._meta_lograda_hoy = False
+        self._meta_peak_hoy = 0.0
+        self._tendencia_count = 0  # trades extra usados tras META diaria (máx 1/día)
+        self.last_candle_time = None
+        self.consecutive_losses = 0
+        self.pause_until = 0
         lstm_states = None
         is_warmed_up = False
         root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -872,13 +962,27 @@ class TitanyBotApp(ctk.CTk):
                 if os.path.exists(new_model_path):
                     current_mtime = os.path.getmtime(new_model_path)
                     if current_mtime > last_model_mtime:
-                        self.add_log("🔄 Shadow Trainer evolucionó la red. Inyectando V13_Live en caliente...")
-                        try:
-                            model = RecurrentPPO.load(new_model_path, env=v_env)
-                            last_model_mtime = current_mtime
-                            self.add_log("✅ Neuro-Inyección exitosa. Operando con máxima experiencia.")
-                        except Exception as e:
-                            self.add_log(f"⚠️ Rechazo de Neuro-Inyección V13: {e}")
+                        import zipfile
+                        if zipfile.is_zipfile(new_model_path):
+                            last_model_mtime = current_mtime # Actualizar antes para evitar spam si tarda en cargar
+                            self.add_log("🔄 Shadow Trainer evolucionó la red. Inyectando V13_Live en caliente...", use_timestamp=False)
+                            try:
+                                 time.sleep(0.5) # Espera técnica para asegurar el cierre del stream
+                                 # Cargar SIN env: evita toda comparación de obs_space
+                                 model = RecurrentPPO.load(new_model_path, device="cpu")
+                                 # FIX: NO resetear LSTM al recargar modelo.
+                                 # La arquitectura no cambia entre ciclos del Shadow Trainer
+                                 # (misma forma (30,30)), así que los estados LSTM siguen siendo
+                                 # válidos. Resetear cada 5 min destruía el contexto acumulado.
+                                 # lstm_states = None  ← eliminado intencionalmente
+                                 # is_warmed_up = False  ← eliminado intencionalmente
+                                 self.add_log("✅ Neuro-Inyección exitosa. Contexto LSTM preservado.")
+                            except Exception as e:
+                                last_model_mtime = 0 # Reset si falló para reintentar
+                                self.add_log(f"⚠️ Rechazo de Neuro-Inyección V13: {e}")
+                        else:
+                            # ⏳ Si no es ZIP aún, es que se está escribiendo. Reintentamos en el próximo ciclo.
+                            pass
             all_positions = mt5.positions_get()
             total_n_pos = len(all_positions) if all_positions else 0
             symbol_pos = [p for p in all_positions if p.symbol == SYMBOL] if all_positions else []
@@ -891,16 +995,52 @@ class TitanyBotApp(ctk.CTk):
                 if last_balance != 0 and current_balance != last_balance:
                     diff = current_balance - last_balance
                     won = diff > 0
-                    new_w = self.neuro_engine.adapt_synapses(won)
-                    if won:
-                        self.add_log(f"🧠 NEURO: Win! Potenciando sinapsis -> W={new_w:.2f}")
+                    
+                    # 🛡️ Control de racha perdedora
+                    if not won:
+                        self.consecutive_losses += 1
+                        if self.consecutive_losses >= 2:
+                            self.pause_until = time.time() + 1800 # Pausa de 30 minutos
+                            self.add_log("🛑 PAUSA: 2 SL consecutivos. Mercado adverso. Pausa de 30 mins.")
                     else:
-                        self.add_log(f"🧠 NEURO: Loss. Deprimiendo sinapsis -> W={new_w:.2f}")
+                        self.consecutive_losses = 0
+                    
+                    # ⚔️ CONFRONTACIÓN: ¿La IA tuvo razón contra el destino?
+                    new_w = self.neuro_engine.adapt_synapses(won, self.was_congruent)
+                    
+                    if won:
+                        if self.was_congruent:
+                            self.prophecy_success_count += 1
+                        msg = "🧠 NEURO: Win! Sinapsis potenciada." if self.was_congruent else "🧠 NEURO: ¡IA LEGENDARIA! Ganó contra la Genética."
+                        self.add_log(f"{msg} -> W={new_w:.2f}")
+                    else:
+                        msg = "🧠 NEURO: Loss. Sinapsis deprimida." if self.was_congruent else "⚠️ NEURO: Fracaso por soberbia. Ignoró el Dorado."
+                        self.add_log(f"{msg} -> W={new_w:.2f}")
+                        self.last_loss_time = time.time()
+                # 📊 Registrar equity del día (para detectar herencia de pérdidas catastróficas)
+                if self._day_equity_start == 0.0:
+                    self._day_equity_start = acc.equity
+                day_equity_delta = acc.equity - self._day_equity_start  # negativo = pérdida heredada de ayer
+
                 now = datetime.datetime.now()
                 today_start = datetime.datetime(now.year, now.month, now.day)
                 deals_today = mt5.history_deals_get(today_start, now + datetime.timedelta(days=1))
                 realized_today = sum([d.profit for d in deals_today if d.entry == mt5.DEAL_ENTRY_OUT]) if deals_today else 0.0
-                daily_profit = realized_today + acc.profit                                             
+                daily_profit = realized_today + acc.profit
+
+                # ── RESET DIARIO DE META (corre en TODOS los ciclos, no solo en OPEN) ────────
+                # FIX CRÍTICO: garantiza que meta_diaria_alcanzada se resetee cada medianoche
+                # aunque el modelo lleve horas prediciendo HOLD.
+                _hoy_str_global = now.strftime('%Y-%m-%d')
+                if _hoy_str_global != self._meta_fecha_hoy:
+                    self._meta_fecha_hoy = _hoy_str_global
+                    self._meta_lograda_hoy = False
+                    self._meta_peak_hoy = 0.0
+                    self.meta_diaria_alcanzada = False
+                    self._day_equity_start = acc.equity
+                    self._tendencia_count = 0  # nuevo día: resetear cupo de trades extra
+                    self.add_log(f"🌅 NUEVO DÍA ({_hoy_str_global}). Flags meta reiniciados. Equity ref: {acc.equity:.2f}€")
+
                 weekday = now.weekday()          
                 week_start = today_start - datetime.timedelta(days=weekday)
                 deals_week = mt5.history_deals_get(week_start, now + datetime.timedelta(days=1))
@@ -923,6 +1063,9 @@ class TitanyBotApp(ctk.CTk):
                     stats_str = f"Día: {daily_profit:+.2f}€ | Sem: {weekly_profit:+.2f}€"
                     self.last_terminal_sync = f"[{time.strftime('%H:%M:%S')}] 📡 [AGA-MORA] SYNC OK | {stats_str} | MT5: {SYMBOL}"
                     self.add_log(f"📡 [AGA-MORA] SYNC OK | {stats_str} | MT5: {SYMBOL}")
+                    # 📊 DIAGNÓSTICO de estado de filtros (cada SYNC para no saturar logs)
+                    meta_str = "🔴META" if self.meta_diaria_alcanzada else "🟢libre"
+                    self.add_log(f"🔍 ESTADO: Meta={meta_str} | Día={self._meta_fecha_hoy} | Equity={acc.equity:.2f}€ | dd={dd:.1f}%")
                 # 🛡️ FIX BUG OVERTRADING: Verificar meta diaria ya alcanzada
                 if self.meta_diaria_alcanzada:
                     pass  # No abrir nada más hoy
@@ -962,7 +1105,7 @@ class TitanyBotApp(ctk.CTk):
                             # 🔒 FIX: Activar flag para bloquear TODAS las entradas futuras de esta sesión
                             self.meta_diaria_alcanzada = True
                             self.add_log("🔒 SESIÓN COMPLETADA: Meta diaria asegurada. Bot en modo SOLO MONITOREO hasta mañana.")
-                            self.after(0, lambda: self.lbl_status.configure(
+                            self._dispatch(lambda: self.lbl_status.configure(
                                 text="🏆 META DIARIA ALCANZADA - Solo monitoreando",
                                 text_color="#f59e0b"
                             ))
@@ -977,13 +1120,13 @@ class TitanyBotApp(ctk.CTk):
                 self.last_equity_internal = acc.equity
                 self.update_ui_chart(acc.equity)
                 self._save_equity_history()                             
-                self.after(0, lambda: self.stat_cards["balance"].configure(text=f"{acc.balance:,.2f}"))
-                self.after(0, lambda: self.stat_cards["equity"].configure(text=f"{acc.equity:,.2f}"))
-                self.after(0, lambda: self.stat_cards["winrate"].configure(text=f"{win_rate:.0f}%"))
-                
+                _bal = f"{acc.balance:,.2f}"; self._dispatch(lambda b=_bal: self.stat_cards["balance"].configure(text=b))
+                _eq  = f"{acc.equity:,.2f}";  self._dispatch(lambda e=_eq:  self.stat_cards["equity"].configure(text=e))
+                _wr  = f"{win_rate:.0f}%";    self._dispatch(lambda w=_wr:  self.stat_cards["winrate"].configure(text=w))
+
                 # Color dinámico para TODAY
                 day_col = self.colors["accent_green"] if daily_profit > 0 else (self.colors["accent_red"] if daily_profit < 0 else self.colors["accent_orange"])
-                self.after(0, lambda c=day_col, d=daily_profit: self.stat_cards["daily"].configure(text=f"{d:+.2f}", text_color=c))
+                self._dispatch(lambda c=day_col, d=daily_profit: self.stat_cards["daily"].configure(text=f"{d:+.2f}", text_color=c))
                 if profit > 0:
                     color = self.colors["accent_green"]
                     sign = "+"
@@ -993,8 +1136,56 @@ class TitanyBotApp(ctk.CTk):
                 else:
                     color = self.colors["text_secondary"]
                     sign = ""
-                self.after(0, lambda c=color, s=sign, p=profit: self._update_profit_display(c, s, p))
-                self.after(0, lambda n=n_pos, tn=total_n_pos: self.lbl_status.configure(text=f"● MONITOREANDO {n}/{MAX_POSITIONS} {SYMBOL} | {tn} TOTALES"))
+                # 🛡️ TRAILING STOP DINÁMICO
+                if symbol_pos:
+                    tick_now = mt5.symbol_info_tick(SYMBOL)
+                    p_info = mt5.symbol_info(SYMBOL)
+                    if tick_now and p_info:
+                        for pos in symbol_pos:
+                            point = p_info.point
+                            if pos.type == mt5.ORDER_TYPE_BUY:
+                                pips_up = (tick_now.bid - pos.price_open) / point / 10.0
+                                new_sl = pos.sl
+                                if pips_up >= 10.0:
+                                    new_sl = tick_now.bid - (3.0 * 10 * point)
+                                elif pips_up >= 7.0:
+                                    new_sl = max(pos.sl if pos.sl > 0 else 0, pos.price_open + (4.0 * 10 * point))
+                                elif pips_up >= 4.5:
+                                    new_sl = max(pos.sl if pos.sl > 0 else 0, pos.price_open + (2.0 * 10 * point))
+                                
+                                if new_sl > pos.sl or pos.sl == 0:
+                                    req_be = {
+                                        "action": mt5.TRADE_ACTION_SLTP, "symbol": SYMBOL,
+                                        "sl": new_sl, "tp": pos.tp,
+                                        "position": pos.ticket, "magic": 123456
+                                    }
+                                    res_be = mt5.order_send(req_be)
+                                    if res_be.retcode == mt5.TRADE_RETCODE_DONE:
+                                        self.add_log(f"🛡️ TRAILING STOP: Nivel asegurado a {new_sl} ({pos.ticket})")
+                            elif pos.type == mt5.ORDER_TYPE_SELL:
+                                pips_up = (pos.price_open - tick_now.ask) / point / 10.0
+                                new_sl = pos.sl
+                                if pips_up >= 10.0:
+                                    new_sl = tick_now.ask + (3.0 * 10 * point)
+                                elif pips_up >= 7.0:
+                                    dist = pos.price_open - (4.0 * 10 * point)
+                                    new_sl = min(pos.sl if pos.sl > 0 else float('inf'), dist)
+                                elif pips_up >= 4.5:
+                                    dist = pos.price_open - (2.0 * 10 * point)
+                                    new_sl = min(pos.sl if pos.sl > 0 else float('inf'), dist)
+
+                                if (pos.sl == 0 and new_sl > 0) or (0 < new_sl < pos.sl):
+                                    req_be = {
+                                        "action": mt5.TRADE_ACTION_SLTP, "symbol": SYMBOL,
+                                        "sl": new_sl, "tp": pos.tp,
+                                        "position": pos.ticket, "magic": 123456
+                                    }
+                                    res_be = mt5.order_send(req_be)
+                                    if res_be.retcode == mt5.TRADE_RETCODE_DONE:
+                                        self.add_log(f"🛡️ TRAILING STOP: Nivel asegurado a {new_sl} ({pos.ticket})")
+
+                self._dispatch(lambda c=color, s=sign, p=profit: self._update_profit_display(c, s, p))
+                self._dispatch(lambda n=n_pos, tn=total_n_pos: self.lbl_status.configure(text=f"● MONITOREANDO {n}/{MAX_POSITIONS} {SYMBOL} | {tn} TOTALES"))
                 if self.sync_engine.check_kill_switch():
                     self.add_log("🔴 KILL SWITCH ACTIVADO desde la App móvil")
                     self.emergency_stop()
@@ -1007,17 +1198,17 @@ class TitanyBotApp(ctk.CTk):
                     self.add_log(f"⚠️ Max Loss alcanzado ({profit:.2f}). Cerrando...")
                     self.close_all_now()
                     for i in range(RESTART_DELAY, 0, -1):
-                        self.after(0, lambda v=i: self.lbl_status.configure(text=f"⏳ AUTO-RESTART: {v}s"))
+                        self._dispatch(lambda v=i: self.lbl_status.configure(text=f"⏳ AUTO-RESTART: {v}s"))
                         time.sleep(1)
                     self.add_log("🔄 Sistema reiniciado.")
                     continue
                 rates = mt5.copy_rates_from_pos(SYMBOL, TIMEFRAME, 0, 500)
                 if rates is None:
-                    self.after(0, lambda: self.lbl_mt5.configure(text="MTS: MARKET CLOSED", text_color=self.colors["accent_orange"]))
-                    self.after(0, lambda: self.conn_dot.configure(text_color=self.colors["accent_orange"]))
+                    self._dispatch(lambda: self.lbl_mt5.configure(text="MTS: MARKET CLOSED", text_color=self.colors["accent_orange"]))
+                    self._dispatch(lambda: self.conn_dot.configure(text_color=self.colors["accent_orange"]))
                 else:
-                    self.after(0, lambda: self.lbl_mt5.configure(text="MTS: MARKET OPEN", text_color=self.colors["accent_green"]))
-                    self.after(0, lambda: self.conn_dot.configure(text_color=self.colors["accent_green"]))
+                    self._dispatch(lambda: self.lbl_mt5.configure(text="MTS: MARKET OPEN", text_color=self.colors["accent_green"]))
+                    self._dispatch(lambda: self.conn_dot.configure(text_color=self.colors["accent_green"]))
                     df = pd.DataFrame(rates)
                     df.rename(columns={'time': 'Gmt time', 'open': 'Open', 'high': 'High', 
                                       'low': 'Low', 'close': 'Close', 'tick_volume': 'Volume'}, inplace=True)
@@ -1041,11 +1232,13 @@ class TitanyBotApp(ctk.CTk):
                     golden_cols = ["golden_trend", "golden_cross", "golden_setup"]
                     sniper_cols = ["vsa_ratio_norm", "volume_delta", "climax_candle"]
                     state_features = 3
-                    try:
-                        required_indicators = self.model_features - state_features
-                    except:
-                        required_indicators = 21             
-                    if required_indicators == 26:                  
+                    # model_features ya incluye state_features (es el total de columnas del obs space)
+                    required_indicators = self.model_features - state_features
+                    #self.add_log(f"🔬 Obs space: {self.model_features} = {required_indicators} indicadores + {state_features} estado")
+                    if required_indicators == 27:
+                         # V12 Sniper: base(12)+quant(4)+regime(1)+phys(4)+golden(3)+sniper(3)
+                         cols = base_cols + quant_cols + regime_col + phys_cols + golden_cols + sniper_cols
+                    elif required_indicators == 26:                  
                          cols = base_cols + quant_cols + phys_cols + golden_cols + sniper_cols
                     elif required_indicators == 23:             
                          cols = base_cols + quant_cols + regime_col + phys_cols + golden_cols[:2]
@@ -1056,30 +1249,47 @@ class TitanyBotApp(ctk.CTk):
                     elif required_indicators == 17:              
                          cols = base_cols + quant_cols + regime_col
                     else:
-                         self.add_log(f"⚠️ Mismatch Neural: Modelo pide {required_indicators} ind. Usando config V7.")
-                         cols = base_cols + quant_cols + phys_cols + regime_col
+                         # Fallback: include regime_col in the full column list
+                         all_cols = base_cols + quant_cols + regime_col + phys_cols + golden_cols + sniper_cols
+                         if required_indicators <= len(all_cols):
+                             cols = all_cols[:required_indicators]
+                         else:
+                             cols = all_cols
+                         self.add_log(f"⚠️ Auto-ajuste Neural: usando {len(cols)}/{required_indicators} cols.")
                     last_fer = df_p["quant_fer"].iloc[-1]
                     last_vam = df_p["quant_vam"].iloc[-1]
                     last_z = df_p["quant_zscore"].iloc[-1]
                     last_z10 = df_p["quant_zscore_10"].iloc[-1] if "quant_zscore_10" in df_p.columns else 0.0
                     if len(df_p) >= WIN:
                         obs_b = df_p[cols].tail(WIN).to_numpy()
+                        # Forzar exactamente el número de columnas que el modelo espera
+                        n_expected = self.model_features - 3
+                        if obs_b.shape[1] < n_expected:
+                            obs_b = np.hstack([obs_b, np.zeros((WIN, n_expected - obs_b.shape[1]))])
+                        elif obs_b.shape[1] > n_expected:
+                            obs_b = obs_b[:, :n_expected]
                         state_v = np.tile(np.array([1.0 if n_pos > 0 else 0.0, 0.0, 0.0]), (WIN, 1))
                         obs = np.hstack([obs_b, state_v]).astype(np.float32)
                         obs_ready = obs[np.newaxis, ...]
-                        if v_env and hasattr(v_env, 'normalize_obs'):
-                            final_obs = v_env.normalize_obs(obs_ready)
+                        # Apply VecNormalize stats if available (matches training)
+                        if self._obs_mean is not None:
+                            try:
+                                final_obs = (obs_ready - self._obs_mean) / self._obs_std
+                            except Exception:
+                                final_obs = obs_ready
                         else:
                             final_obs = obs_ready
                         if not is_warmed_up:
                             self.add_log("📥 Cargando memoria de mercado (LSTM Context)...")
                             for i in range(len(df_p) - 100, len(df_p) - WIN):
                                 window_past = df_p[cols].iloc[i-WIN:i].to_numpy()
+                                if window_past.shape[1] < n_expected:
+                                    window_past = np.hstack([window_past, np.zeros((WIN, n_expected - window_past.shape[1]))])
+                                elif window_past.shape[1] > n_expected:
+                                    window_past = window_past[:, :n_expected]
                                 state_past = np.zeros((WIN, 3))
                                 obs_past_full = np.hstack([window_past, state_past]).astype(np.float32)
                                 obs_past = obs_past_full[np.newaxis, ...]
-                                if v_env and hasattr(v_env, 'normalize_obs'):
-                                    obs_past = v_env.normalize_obs(obs_past)
                                 _, lstm_states = model.predict(obs_past, state=lstm_states, deterministic=True)
                             is_warmed_up = True
                             self.add_log("✅ Consciencia de mercado COMPLETADA. Sniper en posición.")
@@ -1095,8 +1305,9 @@ class TitanyBotApp(ctk.CTk):
                             except: pass
                         act_item = int(act.item())
                         res = actions[act_item]
-                        self.after(0, lambda obs=final_obs, act=act_item, df=df_p.tail(1): 
-                                   self._log_market_experience(obs, act, df))
+                        self._dispatch(lambda obs=final_obs, act=act_item, df=df_p.tail(1):
+                                      self._log_market_experience(obs, act, df))
+                        allow_entry = False  # ✅ Siempre inicializado, evita UnboundLocalError
                         if res[0] == "OPEN":
                          # ══════════════════════════════════════════════════════════
                          # 🌊 PASO 0: CONTEXTO MACRO H4 — Se calcula PRIMERO
@@ -1116,24 +1327,128 @@ class TitanyBotApp(ctk.CTk):
                          except:
                              pass
                          allow_entry = True
-                         if last_fer < 0.30:
-                             if abs(last_z) < 1.2:
-                                 allow_entry = False
+
+                         # 🌊 H4 MACRO DIRECTION OVERRIDE ──────────────────────────────────
+                         # El modelo tiene sesgo mean-reversion (predice BUY en bajadas H1).
+                         # Cuando H4 confirma tendencia fuerte (>50p), forzar dirección macro.
+                         # Sin posición abierta para no interferir con gestión de trades.
+                         if n_pos == 0 and abs(h4_gap) > 50:
+                             if h4_bear and res[1] == 1:   # modelo predice BUY en H4 bajista
+                                 res = actions[1]          # action 1 = OPEN SELL (d=0)
                                  if int(time.time()) % 60 == 0:
-                                     self.add_log("🛡️ FILTRO LAZARUS: Esperando mejor setup (FER<0.30 | Z<1.2).")
+                                     self.add_log(f"🌊 MACRO OVERRIDE BUY→SELL (H4={h4_gap:.0f}p bearish)")
+                             elif h4_bull and res[1] == 0: # modelo predice SELL en H4 alcista
+                                 res = actions[2]          # action 2 = OPEN BUY (d=1)
+                                 if int(time.time()) % 60 == 0:
+                                     self.add_log(f"🌊 MACRO OVERRIDE SELL→BUY (H4={h4_gap:.0f}p bullish)")
+                         # ─────────────────────────────────────────────────────────────────
+
+                         # 🛑 PAUSA DE RACHA PERDEDORA
+                         if time.time() < getattr(self, 'pause_until', 0):
+                             allow_entry = False
+                             minutes_left = int((self.pause_until - time.time()) / 60)
+                             if int(time.time()) % 60 == 0:
+                                 self.add_log(f"🛑 PAUSA ACTIVA: Enfriando motores ({minutes_left} min restantes)")
+                         
+                         # ⏳ ANTI-SPAM (Nueva Vela)
+                         current_candle_time = df_p['Gmt time'].iloc[-1]
+                         if allow_entry and current_candle_time == getattr(self, 'last_candle_time', None):
+                             allow_entry = False
+                         
+                         # 💱 FILTRO DE SPREAD
+                         t = mt5.symbol_info_tick(SYMBOL)
+                         p_inf = mt5.symbol_info(SYMBOL)
+                         if t and p_inf and allow_entry:
+                             spread_pips = (t.ask - t.bid) / p_inf.point / 10.0
+                             if spread_pips > 2.0:
+                                 allow_entry = False
+                                 if int(time.time()) % 30 == 0:
+                                     self.add_log(f"⚠️ SPREAD ALTO: {spread_pips:.1f} pips. Entrada bloqueada.")
+                         
+                         # 🛡️ LAZARUS EVOLUTION: Protección contra Inestabilidad y Parábolas
+                         # LAZARUS adaptativo: H4 fuerte ya confirma tendencia institucional.
+                         # FER mide fractalidad H1. En sesión asiática FER es casi siempre
+                         # 0.00-0.12 incluso con tendencia H4 clara → thresholds muy bajos.
+                         if abs(h4_gap) > 100:
+                             _fer_thr = 0.01   # H4 extremo: solo excluir mercado completamente muerto
+                         elif abs(h4_gap) > 70:
+                             _fer_thr = 0.02   # H4 muy fuerte
+                         elif abs(h4_gap) > 50:
+                             _fer_thr = 0.04   # H4 moderado — FER media real ~0.066 → pasa ~50%
+                         else:
+                             _fer_thr = 0.28   # Mercado lateral: umbral conservador original
+                         if last_fer < _fer_thr:
+                             allow_entry = False
+                             if int(time.time()) % 60 == 0:
+                                 self.add_log(f"🛡️ LAZARUS: FER={last_fer:.2f} < {_fer_thr:.2f} (H4={h4_gap:.0f}p)")
+                         
+                         # 🚀 ESCUDO ANTI-PARABÓLICA: No entrar contra "muros" de precio
+                         if allow_entry and res[0] == "OPEN":
+                             last_c   = df_p.iloc[-1]
+                             c_range  = (last_c['High'] - last_c['Low']) 
+                             if c_range > 0:
+                                 rel_cl = (last_c['Close'] - last_c['Low']) / c_range
+                                 # Si queremos VENDER pero la vela es un martillo alcista sin mecha arriba
+                                 if res[1] == 0 and rel_cl > 0.85: 
+                                     allow_entry = False
+                                     if int(time.time()) % 30 == 0:
+                                         self.add_log("🚀 ANTI-PARABÓLICA: Venta bloqueada. Muro alcista detectado.")
+                                 # Si queremos COMPRAR pero la vela es un martillo bajista sin mecha abajo
+                                 elif res[1] == 1 and rel_cl < 0.15: 
+                                     allow_entry = False
+                                     if int(time.time()) % 30 == 0:
+                                         self.add_log("🚀 ANTI-PARABÓLICA: Compra bloqueada. Muro bajista detectado.")
                          vsa_confirm = False
+                         last_vsa    = 0.10
                          if "vsa_ratio_norm" in df_p.columns:
                              last_vsa = df_p["vsa_ratio_norm"].iloc[-1]
-                             if last_vsa > 1.1:
-                                 vsa_confirm = True
-                             elif abs(h4_gap) > 40:  # Tendencia macro muy fuerte: umbral VSA reducido
-                                 vsa_confirm = last_vsa > 0.40
+
+                         # 🧬 SENSOR "ORGANISMO VIVO" (Acumulación e Imán)
+                         if allow_entry and res[0] == "OPEN":
+                             last_c = df_p.iloc[-1]
+                             total_rng = (last_c['High'] - last_c['Low'])
+                             body_rng  = abs(last_c['Close'] - last_c['Open'])
+                             is_doji   = (body_rng / total_rng) < 0.20 if total_rng > 0 else False
+                             if last_vsa > 0.85 and is_doji:
+                                 if int(time.time()) % 60 == 0:
+                                     self.add_log("🧬 ALERTA SPRING: Muelle detectado. Acumulación institucional.")
+                             
+                             if "close_ma50_diff" in df_p.columns:
+                                 ma5_diff = df_p["close_ma50_diff"].iloc[-1]
+                                 if last_vsa > 0.60 and abs(ma5_diff) > 0.0030:
+                                     if int(time.time()) % 60 == 0:
+                                         self.add_log(f"🧲 IMÁN DETECTADO: El precio ({ma5_diff*10000:.0f}p) será atraído a la media.")
+                              
+                         # VSA adaptativo: sesión asiática tiene volumen bajo estructural.
+                         # Con H4 tendencial fuerte el spread filter actúa como red de seguridad.
+                         # VSA media real ~0.13 en este régimen → thresholds acordes.
+                         if last_vsa > 1.1:
+                             vsa_confirm = True
+                         elif abs(h4_gap) > 100:
+                             vsa_confirm = last_vsa > 0.01   # H4 extremo: prácticamente sin requisito VSA
+                         elif abs(h4_gap) > 70:
+                             vsa_confirm = last_vsa > 0.02   # H4 muy fuerte
+                         elif abs(h4_gap) > 50:
+                             vsa_confirm = last_vsa > 0.05   # H4 moderado — VSA media ~0.13 → pasa ~80%
+                         elif abs(h4_gap) > 40:
+                             vsa_confirm = last_vsa > 0.15   # H4 leve
                          if res[0] == "OPEN" and not vsa_confirm:
                              allow_entry = False
                              if int(time.time()) % 60 == 0:
                                  self.add_log(f"🕵️ VSA FILTER: Volumen débil ({last_vsa:.2f}) | H4={h4_gap:.0f}p")
                          # ─── REVERSIÓN / MOMENTUM (ajustado al contexto H4) ──────────
                          if res[0] == "OPEN" and allow_entry:
+                             # 🧬 ESCUDO DE IMPULSO H1 (SISTEMA BIO-TENDENCIAL)
+                             last_c  = df_p.iloc[-1]
+                             h1_bull = df_p["close_ma50_diff"].iloc[-1] > 0
+                             if res[1] == 1: # BUY
+                                 if h4_bear and last_z10 >= -2.0: allow_entry = False
+                                 elif last_z10 > 2.5: allow_entry = False
+                             else: # SELL
+                                 if h1_bull and last_z10 < 3.8: allow_entry = False
+                                 elif h4_bull and last_z10 < 4.2: allow_entry = False
+                         
+                         if False: # Bloque antiguo desactivado
                              if res[1] == 1:   # === BUY ===
                                  if h4_bear and last_z10 >= 0.0:  # Macro bajista: bloquear BUY salvo reversión profunda
                                      allow_entry = False
@@ -1185,14 +1500,29 @@ class TitanyBotApp(ctk.CTk):
                                      allow_entry = False
                                      if int(time.time()) % 30 == 0:
                                          self.add_log(f"🚫 ANTI-COHETE: BUY bloqueado ({last_ma50_diff*10000:.0f}p bajo MA50)")
-                                 elif res[1] == 0 and last_ma50_diff < -0.0040:
+                                 # FOMO dinamico: umbral ampliado para H4 tendencial fuerte/extremo.
+                                 # H4>100p: permitir SELL hasta -180p (sesión bearish extrema).
+                                 # H4>50p: permitir SELL hasta -100p (tendencia bear confirmada).
+                                 if h4_bear and h4_gap < -100:
+                                     fomo_sell_thr = -0.0180  # Bear extremo: SELL hasta -180p bajo MA50
+                                     fomo_buy_thr  =  0.0040
+                                 elif h4_bear and h4_gap < -50:
+                                     fomo_sell_thr = -0.0100  # Bear fuerte: SELL hasta -100p bajo MA50
+                                     fomo_buy_thr  =  0.0040
+                                 elif h4_bull and h4_gap > 50:
+                                     fomo_sell_thr = -0.0040
+                                     fomo_buy_thr  =  0.0100  # Bull fuerte: BUY hasta +100p
+                                 else:
+                                     fomo_sell_thr = -0.0040  # Neutral
+                                     fomo_buy_thr  =  0.0040
+                                 if res[1] == 0 and last_ma50_diff < fomo_sell_thr:
                                      allow_entry = False
                                      if int(time.time()) % 30 == 0:
-                                         self.add_log(f"🚫 FOMO: SELL bloqueado, el precio ya cayó demasiado ({last_ma50_diff*10000:.0f}p bajo MA50)")
-                                 elif res[1] == 1 and last_ma50_diff > 0.0040:
+                                         self.add_log(f"FOMO: SELL bloqueado ({last_ma50_diff*10000:.0f}p < umbral {fomo_sell_thr*10000:.0f}p)")
+                                 elif res[1] == 1 and last_ma50_diff > fomo_buy_thr:
                                      allow_entry = False
                                      if int(time.time()) % 30 == 0:
-                                         self.add_log(f"🚫 FOMO: BUY bloqueado, el precio ya subió demasiado (+{last_ma50_diff*10000:.0f}p sobre MA50)")
+                                         self.add_log(f"FOMO: BUY bloqueado (+{last_ma50_diff*10000:.0f}p > umbral +{fomo_buy_thr*10000:.0f}p)")
                         if res[0] == "OPEN" and allow_entry:
                             last_pa_eng = df_p["pa_engulfing"].iloc[-1] if "pa_engulfing" in df_p.columns else 0
                             last_pa_pin = df_p["pa_pinbar"].iloc[-1] if "pa_pinbar" in df_p.columns else 0
@@ -1244,7 +1574,7 @@ class TitanyBotApp(ctk.CTk):
                                 else:
                                     drift = -last_z10 * (atr_m * 0.1)   # Mean-reversion estándar
                                 hits_sl = 0
-                                sl_dist = min(20.0, float(res[2])) / 10000.0
+                                sl_dist = min(35.0, float(res[2])) / 10000.0
                                 for _ in range(300):
                                     steps = drift + np.random.normal(0, atr_m * 0.4, 15)
                                     path = np.cumsum(steps)
@@ -1262,35 +1592,152 @@ class TitanyBotApp(ctk.CTk):
                                         self.add_log(f"🌌 MULTIVERSO: {int((1-prob_muerte)*100)}% supervivencia ✓ | H4={h4_gap:.0f}p")
                             except Exception as e:
                                 pass
+                        
                         time_since_last = time.time() - last_trade_time
-                        if allow_entry and n_pos < MAX_POSITIONS and time_since_last < 300:
+                        if allow_entry and n_pos < MAX_POSITIONS and time_since_last < 60:
                             allow_entry = False                                  
-                            if int(time.time()) % 30 == 0:
-                                 self.add_log(f"⏳ COOLDOWN: Esperando {int(300 - time_since_last)}s para evitar ráfagas en misma vela.")
-                        # 🛡️ FIX: Bloquear entrada si la meta diaria ya fue alcanzada
+                            if int(time.time()) % 15 == 0:
+                                self.add_log(f"⏳ COOLDOWN: Esperando {int(60 - time_since_last)}s.")
+
+                        # ⚔️ FORZAR ENTRADA POR PROFECÍA (Golden Checkpoint Override)
+                        # [COMENTADO] - Pendiente de que desarrolles tu concepto.
+                        # last_c = df_p.iloc[-1]['Close']
+                        # atr_m = df_p['atr'].iloc[-1] if 'atr' in df_p.columns else 0.0010
+                        forced_by_prophecy = False
+                        
+                        # if len(self.golden_checkpoints['highs']) > 0 and len(self.golden_checkpoints['lows']) > 0:
+                        #     c_high = self.golden_checkpoints['highs'][0]
+                        #     c_low  = self.golden_checkpoints['lows'][0]
+                        #     dist_high = c_high - last_c
+                        #     dist_low  = last_c - c_low
+                        #     
+                        #     # Si toca la CÚSPIDE (Venta Forzada)
+                        #     if dist_high < (atr_m * 0.2) and last_c >= c_low and res[1] == 0:
+                        #         allow_entry = True
+                        #         forced_by_prophecy = True
+                        #         self.add_log("⚔️ GATILLO DORADO: Ejecutando VENTA en CÚSPIDE profética.")
+                        #     
+                        #     # Si toca el VALLE (Compra Forzada)
+                        #     elif dist_low < (atr_m * 0.2) and last_c <= c_high and res[1] == 1:
+                        #         allow_entry = True
+                        #         forced_by_prophecy = True
+                        #         self.add_log("⚔️ GATILLO DORADO: Ejecutando COMPRA en VALLE profético.")
+
+                        # 🎯 META DIARIA: 0.50€ - Sistema de Recompensa Psicológica
+                        # NOTA: el reset diario se ejecuta globalmente (fuera de este bloque) para
+                        # garantizar que funcione aunque el modelo lleve horas prediciendo HOLD.
+                        META_DIARIA = 1.00
+                        
+                        if daily_profit > self._meta_peak_hoy:
+                            self._meta_peak_hoy = daily_profit
+                        
+                        # Si alcanzó la meta hoy por primera vez
+                        if daily_profit >= META_DIARIA and not self._meta_lograda_hoy:
+                            self._meta_lograda_hoy = True
+                            self.meta_diaria_alcanzada = True  # 🛡️ Bloquear inmediatamente — no esperar caída
+                            self.add_log(f"🏆 META DIARIA ALCANZADA: +{daily_profit:.2f}€ ≥ objetivo {META_DIARIA}€ → ¡TRIPLE RECOMPENSA!")
+                            if hasattr(self.neuro_engine, 'synaptic_weight'):
+                                self.neuro_engine.synaptic_weight = min(1.0, self.neuro_engine.synaptic_weight * 3.0)
+                                self.neuro_engine._save_memory()
+
+                        # [PÁRDIDA CATÁSTROFE] Si vamos perdiendo más de 1€, bloquear todo el día. Cubre el salto de medianoche.
+                        if day_equity_delta < -1.0 and not self.meta_diaria_alcanzada:
+                            self.meta_diaria_alcanzada = True
+                            self.add_log(f"🛑 PÉRDIDA CATÁSTROFE: {day_equity_delta:.2f}€ desde inicio del día. Bloqueado hasta recuperar.")
+
+                        # Si había alcanzado la meta pero la perdió: bloquear y castigar
+                        if self._meta_lograda_hoy and daily_profit < META_DIARIA * 0.5:
+                            self.meta_diaria_alcanzada = True  # Bloquear el resto del día
+                            self.add_log(f"⛔ PROTECCIÓN: Meta alcanzada y perdida ({daily_profit:.2f}€). Operaciones bloqueadas por hoy.")
+                            if hasattr(self.neuro_engine, 'synaptic_weight'):
+                                self.neuro_engine.synaptic_weight = max(0.1, self.neuro_engine.synaptic_weight * 0.5)
+                                self.neuro_engine._save_memory()
+
+                        # 🛡️ FIX: Bloquear entrada si la meta diaria ya fue alcanzada.
+                        # EXCEPCIÓN DE TENDENCIA: solo si aún somos positivos en el día Y
+                        # el H4 confirma la dirección con VSA y FER fuertes.
                         if self.meta_diaria_alcanzada:
-                            allow_entry = False
+                            # TENDENCIA EXCEPCIONAL: 1 trade extra permitido tras META,
+                            # solo si el día es positivo Y H4 confirma dirección fuerte.
+                            # _tendencia_count evita que el bot abra múltiples trades extra
+                            # tras META, lo que causó hoy: +2.70€ → -1.17€ (3er trade SL).
+                            _tendencia_ok = (
+                                self._tendencia_count < 1 and  # máx 1 trade extra por día
+                                daily_profit > 0 and           # solo si el día es positivo
+                                (
+                                    (h4_bear and abs(h4_gap) >= 50 and res[1] == 0  # SELL en H4 bajista
+                                     and last_vsa >= 1.1 and last_fer >= 0.25) or
+                                    (h4_bull and abs(h4_gap) >= 50 and res[1] == 1  # BUY en H4 alcista
+                                     and last_vsa >= 1.1 and last_fer >= 0.25)
+                                )
+                            )
+                            if not _tendencia_ok:
+                                allow_entry = False
                         if res[0] == "OPEN" and n_pos < MAX_POSITIONS and allow_entry:
                             market_entropy = self.neuro_engine.calculate_entropy(df_p["Close"].values)
                             synaptic_w = self.neuro_engine.synaptic_weight
                             base_lot = float(self.entry_lots.get())
-                            current_wr = win_rate if win_rate > 35 else 40                                 
+                            # Cap WR al 55% — evita lots 10x tras un solo win (WR=100% → Kelly explota)
+                            current_wr = min(win_rate if win_rate > 35 else 40, 55)
                             kelly_lot = self.neuro_engine.calculate_kelly_lot(base_lot, current_wr, acc.balance)
                             neuro_lot = kelly_lot * synaptic_w * (1 - (market_entropy * 0.5))
-                            neuro_lot = max(0.01, min(0.5, round(neuro_lot, 2)))                                 
+                            # Cap duro: máx base_lot cuando en drawdown, base_lot*2 en positivo
+                            # Evita que la demo 10k USD cause lotes 0.22 con synaptic_w bajo
+                            if day_equity_delta < 0:
+                                neuro_lot = base_lot  # drawdown: lote mínimo siempre
+                            else:
+                                neuro_lot = max(base_lot, min(base_lot * 2, round(neuro_lot, 2)))                                 
                             self.add_log(f"🧠 KELLY+NEURO: WR={current_wr:.1f}% | Lot={neuro_lot}")
                             lote = neuro_lot
                             t = mt5.symbol_info_tick(SYMBOL)
                             p_inf = mt5.symbol_info(SYMBOL)
                             px = t.ask if res[1] == 1 else t.bid
-                            chosen_sl_pips = float(res[2])
-                            if chosen_sl_pips > 20.0:
-                                chosen_sl_pips = 20.0
-                                self.add_log(f"🛡️ DISCIPLINE SHIELD: Reduciendo Stop Loss a máximo de {chosen_sl_pips} pips.")
-                            chosen_tp_pips = chosen_sl_pips * 2.0 
+                            
+                            # 📐 SL/TP DINÁMICO POR ATR (True Range, no solo Close)
+                            # FIX: usar High-Low para capturar wicks/spikes reales
+                            n_atr = 14
+                            if 'atr_14' in df_p.columns:
+                                atr_m = float(df_p['atr_14'].iloc[-1])
+                            elif len(df_p) >= n_atr and 'High' in df_p.columns and 'Low' in df_p.columns:
+                                highs = df_p['High'].values[-n_atr:]
+                                lows  = df_p['Low'].values[-n_atr:]
+                                closes = df_p['Close'].values[-n_atr:]
+                                # True Range: max(H-L, |H-Cprev|, |L-Cprev|) promediado
+                                tr_list = []
+                                for i in range(1, len(highs)):
+                                    tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
+                                    tr_list.append(tr)
+                                atr_m = sum(tr_list) / len(tr_list) if tr_list else (max(highs) - min(lows))
+                            else:
+                                past_closes = df_p['Close'].values[-n_atr:]
+                                atr_m = (max(past_closes) - min(past_closes)) if len(past_closes) > 0 else 0.0010
+                            atr_pips = (atr_m / p_inf.point) / 10.0
+                            
+                            # Validar que el mercado no está muerto
+                            if atr_pips < 5.0 and allow_entry:
+                                self.add_log(f"⚠️ MERCADO MUERTO: ATR {atr_pips:.1f} pips < 5. Operación abortada.")
+                                continue
+                            
+                            # Config minimums: SL_TP_PAIRS[0] = (20, 60) = 3:1 R:R
+                            action_idx = getattr(res, '__getitem__', lambda i: 0)(2) if len(res) > 2 else 0
+                            _cfg_sl = config.SL_TP_PAIRS[0][0]  # 20 pips min
+                            _cfg_tp = config.SL_TP_PAIRS[0][1]  # 60 pips min (3:1)
+                            # ATR-based sizing: 1.5× ATR for SL, keep 3:1 R:R
+                            _atr_sl = round(atr_pips * 1.5, 1)
+                            # Wider SL when all signals confirm direction (spike protection)
+                            _signal_confirmed = (last_vsa >= 1.1 and last_fer >= 0.28 and abs(h4_gap) >= 40)
+                            if _signal_confirmed:
+                                _atr_sl = round(atr_pips * 2.0, 1)  # wider cushion on confirmed trends
+                            # Always apply config minimum
+                            chosen_sl_pips = max(_cfg_sl, _atr_sl)
+                            chosen_tp_pips = max(_cfg_tp, round(chosen_sl_pips * 3.0, 1))  # enforce 3:1
+                            
+                            if chosen_sl_pips > 40.0: chosen_sl_pips = 40.0  # hard cap
+                            
                             sl_points = int(chosen_sl_pips * 10)                    
                             tp_points = int(chosen_tp_pips * 10)
-                            self.add_log(f"📐 AI TARGET: SL={chosen_sl_pips} pips | TP={chosen_tp_pips} pips (1:2)")
+                            self.add_log(f"📐 ATR DYNAMICS: SL={chosen_sl_pips}pips | TP={chosen_tp_pips}pips (ATR: {atr_pips:.1f})")
+                            
                             if res[1] == 1:      
                                 sl_v = px - (sl_points * p_inf.point)
                                 tp_v = px + (tp_points * p_inf.point)
@@ -1308,7 +1755,19 @@ class TitanyBotApp(ctk.CTk):
                             if result.retcode == mt5.TRADE_RETCODE_DONE:
                                 last_trade_time = time.time()                 
                                 self.neuro_engine.last_trade_time = last_trade_time                   
-                                self.neuro_engine._save_memory()                     
+                                self.neuro_engine._save_memory()
+                                self.last_candle_time = current_candle_time # ⏳ Bloquear más trades en esta vela
+                                # Registrar si este trade usó el cupo de TENDENCIA EXCEPCIONAL
+                                if self.meta_diaria_alcanzada:
+                                    self._tendencia_count += 1
+                                    self.add_log(f"🎯 TENDENCIA EXCEPCIONAL usada ({self._tendencia_count}/1 por día). Próximos trades bloqueados.")
+                                
+                                # ⚔️ Confrontación Genética
+                                self.was_congruent = (self.golden_bias == (1 if res[1] == 1 else -1)) if self.golden_bias != 0 else True
+                                if not self.was_congruent:
+                                    self.add_log("⚔️ CONFRONTACIÓN: IA desafiando Profecía Dorada.")
+                                else:
+                                    self.add_log("🧬 SINCRONÍA: IA alineada con el Multiverso Dorado.")                     
                                 self.add_log(f"🚀 POSICIÓN {n_pos+1} ABIERTA (Modo Francotirador)")
                                 notif_url = f"{BASE44_API_URL}/api/Notification"
                                 notif_payload = {
@@ -1321,8 +1780,8 @@ class TitanyBotApp(ctk.CTk):
                                     requests.post(notif_url, json=notif_payload, headers=self.sync_engine.headers, timeout=2)
                                 except:
                                     pass
-                        self.after(0, lambda: self._refresh_terminal_console(last_fer, last_vam, last_z, last_z10, last_vsa))
-                        self.after(0, lambda: self.update_multiverse_ui(df_p))
+                        self._dispatch(lambda: self._refresh_terminal_console(last_fer, last_vam, last_z, last_z10, last_vsa))
+                        self._dispatch(lambda: self.update_multiverse_ui(df_p))
             time.sleep(0.1 if BOT_MODE >= 2 else 2.0)
     def update_multiverse_ui(self, df_p):
         if not hasattr(self, 'tabs') or self.tabs.get() != "🌌 QUANTUM MULTIVERSE":
@@ -1335,25 +1794,100 @@ class TitanyBotApp(ctk.CTk):
             N_SIMULATIONS = 300
             if len(df_p) < PAST_CANDLES: return
             closes = df_p['Close'].tail(PAST_CANDLES).values
-            atr_m = df_p['atr'].iloc[-1] if 'atr' in df_p.columns else 0.0010
-            z = float(df_p["z_score_10"].iloc[-1]) if "z_score_10" in df_p.columns else 0.0
+            # FIX: correct column names (were 'atr' / 'z_score_10' — both wrong)
+            atr_m = df_p['atr_14'].iloc[-1] if 'atr_14' in df_p.columns else 0.0010
+            z = float(df_p["quant_zscore_10"].iloc[-1]) if "quant_zscore_10" in df_p.columns else 0.0
             x_past = np.arange(-PAST_CANDLES + 1, 1)
             self.ax_mv.plot(x_past, closes, color="#ef4444", linewidth=2.0, zorder=5)
             last_price = closes[-1]
             x_future = np.arange(0, FUTURE_CANDLES + 1)
+            
+            # 🧬 Obtener SESGO GENÉTICO
+            genetic_bias = self.genetic_ai.get_signal() if self.genetic_ai else 0
             drift = -z * (atr_m * 0.1)
+            
+            # PERSISTENCIA DORADA (No cambiar si el precio no se desvió > 70%)
+            if self.golden_path is not None and self.prediction_locked:
+                deviation = abs(last_price - self.lock_price)
+                if deviation < (atr_m * 0.7):
+                    offset = last_price - self.golden_path[0]
+                    self.ax_mv.plot(x_future, self.golden_path + offset, color="#FFD700", linewidth=3.5, zorder=7, label="PROFECÍA")
+                else:
+                    self.prediction_locked = False
+                    self.golden_path = None
+
+            paths_w = []
             for _ in range(N_SIMULATIONS):
-                steps = np.insert(drift + np.random.normal(0, atr_m * 0.4, FUTURE_CANDLES), 0, 0)
+                steps = np.insert(drift + np.random.normal(0, atr_m * 0.45, FUTURE_CANDLES), 0, 0)
                 path = last_price + np.cumsum(steps)
-                distance_from_mean = (path[-1] - (last_price - (z * atr_m)))
-                weight = np.exp(-0.5 * (distance_from_mean / (atr_m * 2))**2)
-                alpha = max(0.01, min(0.3, weight * 0.5))
-                self.ax_mv.plot(x_future, path, color="#00e5ff", alpha=alpha, linewidth=0.8)
+                dist = (path[-1] - (last_price - (z * atr_m)))
+                w_gauss = np.exp(-0.5 * (dist / (atr_m * 2))**2)
+                dir_sim = 1 if path[-1] > last_price else -1
+                w_gen = 1.3 if (dir_sim == (1 if genetic_bias > 0 else -1)) else 0.7
+                paths_w.append((path, w_gauss * w_gen))
+            
+            paths_w.sort(key=lambda x: x[1], reverse=True)
+            top_3 = paths_w[:3]
+            
+            # Dibujar universos paralelos (Cyan)
+            for p, w in paths_w[3:]:
+                alpha = max(0.01, min(0.1, w * 0.14))
+                self.ax_mv.plot(x_future, p, color="#00e5ff", alpha=alpha, linewidth=0.5)
+            
+            # Dibujar y Promediar el TOP 3 DORADO
+            if len(top_3) > 0:
+                g_sum = np.zeros_like(top_3[0][0])
+                for p, w in top_3:
+                    self.ax_mv.plot(x_future, p, color="#FFD700", alpha=0.5, linewidth=1.1)
+                    g_sum += p
+                
+                master_g = g_sum / 3.0
+                self.ax_mv.plot(x_future, master_g, color="#FFD700", linewidth=3.5, zorder=8, label="DORADO")
+                
+                if not self.prediction_locked:
+                    self.golden_path = master_g
+                    self.lock_price = last_price
+                    self.prediction_locked = True
+                    
+                    # Generar Checkpoints (Valle y Cúspide de la Profecía)
+                    self.golden_checkpoints['highs'] = [float(np.max(master_g))]
+                    self.golden_checkpoints['lows'] = [float(np.min(master_g))]
+                    
+                    adjs = ["DORADA", "DE TITÁN", "DEL OLIMPO", "CÓSMICA", "ECLÍPTICA", "FRACTAL", "CUÁNTICA", "ETERNA"]
+                    nouns = ["LA SENDA", "EL RUMBO", "LA PROFECÍA", "EL VÓRTICE", "LA ASCENSIÓN", "EL ABISMO", "LA ESTELA"]
+                    self.prophecy_name = f"{random.choice(nouns)} {random.choice(adjs)}"
+                
+                # Sincronizar el Cerebro con el Rumbo Dorado
+                self.golden_bias = 1 if master_g[-1] > last_price else -1
+                
+                # Actualizar Sidebar UI (Protegido)
+                if hasattr(self, 'lbl_profecia'):
+                    self.lbl_profecia.configure(text=self.prophecy_name)
+                    conf_gen = min(99, abs(int(genetic_bias)))
+                    color_gen = self.colors["accent_green"] if genetic_bias > 0 else self.colors["accent_red"] if genetic_bias < 0 else self.colors["text_secondary"]
+                    dir_str = "BULL" if genetic_bias > 0 else "BEAR" if genetic_bias < 0 else "FLAT"
+                    self.lbl_genetica.configure(text=f"{conf_gen}% {dir_str}", text_color=color_gen)
+                    self.lbl_sincronia.configure(text=str(self.prophecy_success_count))
+                    
+                    if len(self.golden_checkpoints['highs']) > 0 and len(self.golden_checkpoints['lows']) > 0:
+                        c_high = self.golden_checkpoints['highs'][0]
+                        c_low = self.golden_checkpoints['lows'][0]
+                        if (c_high - last_price) < (atr_m * 0.2) and last_price >= c_low:
+                            self.lbl_checkpoint.configure(text="STATUS: EN CÚSPIDE (SELL ALERT) 🔴", text_color=self.colors["accent_red"])
+                        elif (last_price - c_low) < (atr_m * 0.2) and last_price <= c_high:
+                            self.lbl_checkpoint.configure(text="STATUS: EN VALLE (BUY ALERT) 🟢", text_color=self.colors["accent_green"])
+                        else:
+                            self.lbl_checkpoint.configure(text="STATUS: NAVEGANDO EL DESTINO...", text_color=self.colors["accent_cyan"])
+            else:
+                self.golden_bias = 0
+
             try:
                 self.canvas_mv.draw()
             except Exception:
                 pass                                                 
-        except Exception as e: 
+        except KeyboardInterrupt:
+            return  # shutdown limpio — no propagar como traceback
+        except Exception as e:
             print("Multiverse Draw Error:", e)
     def _refresh_terminal_console(self, last_fer, last_vam, last_z, last_z10, last_vsa):
         try:
@@ -1363,30 +1897,67 @@ class TitanyBotApp(ctk.CTk):
             timestamp = time.strftime('%H:%M:%S')
             self.last_terminal_quant = f"[{timestamp}] \U0001f9e0 [AGA-MORA] QUANT: FER={last_fer:.2f} | VAM={last_vam:.2f} | Z={last_z:.2f} | Z10={last_z10:.2f} | VSA={last_vsa:.2f}"
             import sys
-            sys.stdout.write("\r" + " " * 115 + "\r" + self.last_terminal_sync + "\n")
-            sys.stdout.write("\r" + " " * 115 + "\r" + self.last_terminal_quant + "\033[F")
+            is_terminal = sys.stdout.isatty()
+            if is_terminal:
+                # Limpiar y escribir en dos líneas separadas para que nunca se mezclen
+                sys.stdout.write("\r" + " " * 115 + "\r" + self.last_terminal_sync + "\n")
+                sys.stdout.write("\r" + " " * 115 + "\r" + self.last_terminal_quant + "\033[F")
+            else:
+                # Per user request: Print them as two separate lines when redirected to log file
+                # We do this every 60s to keep history without bloating the file too much
+                last_f_log = getattr(self, '_last_file_log_time', 0)
+                if now - last_f_log >= 60:
+                    self._last_file_log_time = now
+                    sys.stdout.write(self.last_terminal_sync + "\n")
+                    sys.stdout.write(self.last_terminal_quant + "\n")
             sys.stdout.flush()
             if now - self._last_quant_log_time >= 30:
                 self._last_quant_log_time = now
                 self.add_log(f"\U0001f9e0 [AGA-MORA] QUANT: FER={last_fer:.2f} | VAM={last_vam:.2f} | Z={last_z:.2f} | Z10={last_z10:.2f} | VSA={last_vsa:.2f}")
         except Exception:
             pass
-    def add_log(self, msg):
+    def add_log(self, msg, use_timestamp=True):
         if not msg or not msg.strip():
             return
+            
+        # 🛡️ SMART DEBOUNCE: No repetir el mismo mensaje en menos de 55 segundos
+        now = time.time()
+        msg_clean = msg.strip()
+        if msg_clean in self._last_msg_time:
+            if now - self._last_msg_time[msg_clean] < 55:
+                return
+        self._last_msg_time[msg_clean] = now
+
+        # 🚀 SMART UI UPDATE: Mantenemos fijos SYNC y QUANT
         if "SYNC OK" in msg or "QUANT:" in msg:
-            self.after(0, lambda: self._update_dynamic_ui_log(msg))
+            # FIX: use _dispatch so background threads don't call self.after() directly
+            _m = msg
+            self._dispatch(lambda: self._update_dynamic_ui_log(_m))
             return
+
+        # 🕒 TIMESTAMP ÚNICO: Solo añadir si no lo tiene ya
         timestamp = time.strftime('%H:%M:%S')
-        full_msg = f"[{timestamp}] {msg}"
-        self.after(0, lambda: self._perform_log_update(full_msg + "\n"))
+        if use_timestamp and not msg.startswith("["):
+            full_msg = f"[{timestamp}] {msg}"
+        else:
+            full_msg = msg # Evita acumular [[00:00:00]] [00:00:00]
+
+        # FIX: use _dispatch — safe from any thread
+        _fm = full_msg + "\n"
+        self._dispatch(lambda: self._perform_log_update(_fm))
+        
+        # Terminal Output (Headless)
         import sys
-        sys.stdout.write("\r" + " " * 115 + "\r")
+        is_terminal = sys.stdout.isatty()
+        if is_terminal:
+            sys.stdout.write("\r" + " " * 115 + "\r")
         sys.stdout.write(full_msg + "\n")
-        if hasattr(self, 'last_terminal_sync'):
-            sys.stdout.write("\r" + " " * 115 + "\r" + self.last_terminal_sync + "\n")
-        if hasattr(self, 'last_terminal_quant'):
-            sys.stdout.write("\r" + " " * 115 + "\r" + self.last_terminal_quant + "\033[F")
+        
+        if is_terminal:
+            if hasattr(self, 'last_terminal_sync'):
+                sys.stdout.write("\r" + " " * 115 + "\r" + self.last_terminal_sync + "\n")
+            if hasattr(self, 'last_terminal_quant'):
+                sys.stdout.write("\r" + " " * 115 + "\r" + self.last_terminal_quant + "\033[F")
         sys.stdout.flush()
     def _update_dynamic_ui_log(self, text):
         """Borra la línea vieja y escribe la nueva al final para que quede fija actualizándose."""
@@ -1410,15 +1981,43 @@ class TitanyBotApp(ctk.CTk):
             self.log_txt.see("end")
         except:
             pass
+
+    # ── Thread-safe UI dispatcher ─────────────────────────────────────────────
+    def _dispatch(self, func):
+        """
+        Enqueue a callable for execution on the main (Tkinter) thread.
+        - If already on the main thread → self.after(0, func)  (immediate)
+        - If on a background thread    → log_queue.put(func)   (polled at 100 ms)
+        Replacing bare self.after(0, ...) with _dispatch(...) inside background
+        threads eliminates 'RuntimeError: main thread is not in main loop'.
+        """
+        if threading.current_thread() is threading.main_thread():
+            self.after(0, func)
+        else:
+            try:
+                self.log_queue.put_nowait(func)
+            except Exception:
+                pass
+
     def _check_log_queue(self):
-        """Revisa la cola de logs distribuida entre hilos."""
+        """
+        Polls the shared UI queue from the main thread every 100 ms.
+        Items can be:
+          - str  → append to the log text widget
+          - callable → execute any queued UI lambda (stat_cards, labels, charts…)
+        """
         try:
             while not self.log_queue.empty():
-                msg = self.log_queue.get_nowait()
-                self._perform_log_update(msg)
-        except:
+                item = self.log_queue.get_nowait()
+                if callable(item):
+                    item()           # execute a queued UI update
+                elif isinstance(item, str):
+                    self._perform_log_update(item)
+        except KeyboardInterrupt:
+            return  # shutdown en curso — no reprogramar, salir limpiamente
+        except Exception:
             pass
-        self.after(500, self._check_log_queue)
+        self.after(100, self._check_log_queue)   # 100 ms → responsive UI
 if __name__ == "__main__":
     import sys
     if "--headless" in sys.argv:
@@ -1426,11 +2025,12 @@ if __name__ == "__main__":
         print("🚀 INICIANDO EN MODO TURBO (HEADLESS)...")
     app = TitanyBotApp()
     if BOT_MODE == 3:
-        app.withdraw()                  
-        logic_thread = threading.Thread(target=app.run_bot_logic, daemon=True)
-        logic_thread.start()
+        app.withdraw()
+        # FIX: __init__ already starts self.bot_thread; launching a second thread
+        # here caused "Thread-1 + Thread-2 (run_bot_logic)" double-execution.
+        # The mainloop is still needed so Tkinter can process self.after() callbacks.
         try:
-            while True: time.sleep(10)
+            app.mainloop()
         except KeyboardInterrupt:
             print("\n🛑 Deteniendo bot Headless...")
     else:

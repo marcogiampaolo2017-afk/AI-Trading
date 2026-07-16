@@ -13,6 +13,7 @@ import matplotlib.animation as animation
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
     from env import indicators
+    from core.genetic_engine import GeneticPredictor
 except ImportError:
     pass                                              
 SYMBOL = "EURUSD"
@@ -29,6 +30,13 @@ class MultiverseUI(ctk.CTk):
         self.running = True
         if not mt5.initialize():
             print("Fallo al conectar con MT5")
+        
+        self.genetic_engine = GeneticPredictor()
+        self.golden_path = None
+        self.prediction_locked = False
+        self.lock_price = 0
+        self.checkpoints = []
+        
         self.setup_ui()
         self.start_multiverse_engine()
     def setup_ui(self):
@@ -79,33 +87,83 @@ class MultiverseUI(ctk.CTk):
     def render_multiverse(self, closes, atr, z):
         self.ax.clear()
         self.ax.set_facecolor('#050505')
+        
         x_past = np.arange(-PAST_CANDLES + 1, 1)
         self.ax.plot(x_past, closes, color="#ef4444", linewidth=2.5, zorder=5, label="Sagrada Línea Temporal")
+        
         last_price = closes[-1]
         x_future = np.arange(0, FUTURE_CANDLES + 1)
-        drift = -z * (atr * 0.1) 
-        best_path = None
-        best_weight = -1
-        paths = []
+        
+        # 🧬 Obtener SESGO GENÉTICO para filtrar universos
+        genetic_bias = self.genetic_engine.get_signal()
+        drift = -z * (atr * 0.1)
+        
+        # PERSISTENCIA: Si ya tenemos una línea dorada y el precio no se ha desviado > 70% ATR
+        if self.golden_path is not None and self.prediction_locked:
+            deviation = abs(last_price - self.lock_price)
+            if deviation < (atr * 0.7):
+                # Mantener la predicción anterior visualmente (desplazada al precio actual)
+                offset = last_price - self.golden_path[0]
+                visual_path = self.golden_path + offset
+                self.ax.plot(x_future, visual_path, color="#FFD700", linewidth=4.0, zorder=7, label="PROFECÍA DORADA (BLOQUEADA)")
+            else:
+                self.prediction_locked = False
+                self.golden_path = None
+
+        paths_with_weights = []
         for i in range(N_SIMULATIONS):
-            random_steps = np.random.normal(0, atr * 0.4, FUTURE_CANDLES)
+            # Simulamos con mayor dispersión para buscar realidades genéticas
+            random_steps = np.random.normal(0, atr * 0.5, FUTURE_CANDLES)
             steps = np.insert(drift + random_steps, 0, 0)
             path = last_price + np.cumsum(steps)
+            
+            # Cálculo de congruencia (Gaussian Mean + Genetic Alignment)
             end_price = path[-1]
-            distance_from_mean = (end_price - (last_price - (z * atr)))
-            weight = np.exp(-0.5 * (distance_from_mean / (atr * 2))**2)
-            alpha = max(0.01, min(0.4, weight * 0.5))
-            self.ax.plot(x_future, path, color="#00e5ff", alpha=alpha, linewidth=1.0)
-            paths.append(path)
-            if weight > best_weight:
-                best_weight = weight
-                best_path = path
-        if best_path is not None:
-            self.ax.plot(x_future, best_path, color="#ffffff", linewidth=3.5, alpha=0.9, zorder=6, label="Línea Evolutiva Prime")
-            self.ax.scatter([FUTURE_CANDLES], [best_path[-1]], color="#ffffff", s=50, zorder=7)
-            self.ax.scatter([FUTURE_CANDLES], [best_path[-1]], color="#00e5ff", s=200, alpha=0.4, zorder=6)
-        self.stats_label.configure(text=f"Z-SCORE: {z:+.2f} | ATR: {atr:.5f} | UNIVERSOS SUPERVIVIENTES: {N_SIMULATIONS}")
-        self.ax.legend(loc="upper left", facecolor="#0a0a0a", edgecolor="#1e293b", labelcolor="#f8fafc")
+            dist_mean = (end_price - (last_price - (z * atr)))
+            weight_gaussian = np.exp(-0.5 * (dist_mean / (atr * 2))**2)
+            
+            # Alineación con Genética: Si el sesgo es alcista, premiar universos alcistas
+            direction = 1 if (end_price > last_price) else -1
+            gen_bonus = 1.5 if (direction == (1 if genetic_bias > 0 else -1)) else 0.5
+            
+            final_weight = weight_gaussian * gen_bonus
+            paths_with_weights.append((path, final_weight))
+
+        # Ordenar por peso para encontrar el Top 3 Dorado
+        paths_with_weights.sort(key=lambda x: x[1], reverse=True)
+        top_3 = paths_with_weights[:3]
+        others = paths_with_weights[3:]
+
+        # Dibujar universos descartados (Cyan tenue)
+        for p, w in others:
+            alpha = max(0.01, min(0.15, w * 0.2))
+            self.ax.plot(x_future, p, color="#00e5ff", alpha=alpha, linewidth=0.8)
+
+        # Dibujar y Promediar el TOP 3 DORADO
+        if len(top_3) > 0:
+            golden_sum = np.zeros_like(top_3[0][0])
+            for p, w in top_3:
+                self.ax.plot(x_future, p, color="#FFD700", alpha=0.6, linewidth=1.5, zorder=6)
+                golden_sum += p
+            
+            # La Trayectoria Maestra (Promedio del Top 3)
+            master_golden = golden_sum / 3.0
+            self.ax.plot(x_future, master_golden, color="#FFD700", linewidth=4.5, zorder=8, label="LÍNEA DORADA (TOP 3)")
+            
+            if not self.prediction_locked:
+                self.golden_path = master_golden
+                self.lock_price = last_price
+                self.prediction_locked = True
+                # Extraer Checkpoints (Puntos de Inflexión)
+                idx_max = np.argmax(master_golden)
+                idx_min = np.argmin(master_golden)
+                self.checkpoints = [
+                    {"step": idx_max, "price": master_golden[idx_max], "type": "H"},
+                    {"step": idx_min, "price": master_golden[idx_min], "type": "L"}
+                ]
+
+        self.stats_label.configure(text=f"Z-SCORE: {z:+.2f} | GENETIC BIAS: {genetic_bias:+.2f} | UNIVERSOS DORADOS ACTIVOS")
+        self.ax.legend(loc="upper left", facecolor="#0a0a0a", edgecolor="#1e293b", labelcolor="#f8fafc", fontsize=9)
         self.canvas.draw()
     def on_closing(self):
         self.running = False

@@ -16,13 +16,18 @@ class ShadowMarketEnv(gym.Env):
     Entorno Offline Gym: Entrena al PPO leyendo las experiencias reales pasadas del bot.
     Fuerza a la red neuronal a "internalizar" las pérdidas sin necesidad de filtros manuales.
     """
-    def __init__(self, df_exp, teacher_mode=False):
+    def __init__(self, df_exp, teacher_mode=False, obs_cols=29):
         super(ShadowMarketEnv, self).__init__()
         self.df = df_exp
         self.teacher_mode = teacher_mode
         self.current_step = 0
+        self.obs_cols = obs_cols  # Neuronas totales del modelo cargado
         self.action_space = spaces.Discrete(20)
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(30, 29), dtype=np.float32)
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(30, obs_cols), dtype=np.float32)
+        
+        # Estadísticas de Integración de Filtros
+        self.filter_stats = {"total_ops": 0, "violations": 0}
+        self.integration_reported = False
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.current_step = 0
@@ -31,49 +36,100 @@ class ShadowMarketEnv(gym.Env):
         obs_str = self.df.iloc[self.current_step]["obs"]
         try:
             obs_flat = np.array([float(x) for x in obs_str.split("|")], dtype=np.float32)
-            return obs_flat.reshape((30, 29))
+            obs_flat = np.nan_to_num(obs_flat, nan=0.0, posinf=0.0, neginf=0.0)
+            
+            # 1️⃣ Calcular columnas originales asumiendo ventana de 30
+            original_cols = len(obs_flat) // 30
+            if len(obs_flat) % 30 != 0:
+                # Si está dañado el string, fallamos limpio a la matriz cero
+                return np.zeros((30, self.obs_cols), dtype=np.float32)
+            
+            # 2️⃣ Formar matriz original (30, original_cols) PARA NO DESFAZAR
+            obs_matrix = obs_flat.reshape((30, original_cols))
+            
+            # 3️⃣ Ajustar columnas (Recortar las 3 extras, o rellenar con 0s a la derecha)
+            if original_cols > self.obs_cols:
+                obs_matrix = obs_matrix[:, :self.obs_cols]
+            elif original_cols < self.obs_cols:
+                zeros_pad = np.zeros((30, self.obs_cols - original_cols), dtype=np.float32)
+                obs_matrix = np.hstack((obs_matrix, zeros_pad))
+                
+            return obs_matrix
         except:
-            return np.zeros((30, 29), dtype=np.float32)
+            return np.zeros((30, self.obs_cols), dtype=np.float32)
     def step(self, action):
         current_step_data = self.df.iloc[self.current_step]
         current_price = float(current_step_data["close"])
-        obs_now = self._get_obs()
-        last_fer = obs_now[-1, 12]
-        last_z   = obs_now[-1, 14]
-        last_vsa = obs_now[-1, 23]
-        teacher_allows = True
-        if last_fer < 0.30 and abs(last_z) < 1.2:
-            teacher_allows = False
-        if last_vsa < 1.1:
-            teacher_allows = False
+        
+        # Extraer filtros para el "Teacher"
+        ict_fvg = current_step_data.get("ict_fvg", 0)
+        ict_sw = current_step_data.get("ict_sw", 0)
+        rel_cl = current_step_data.get("rel_cl", 0.5)
+        last_fer = current_step_data.get("fer", 0.3)
+        last_vsa = current_step_data.get("vsa", 1.0)
+
         self.current_step += 1
         done = self.current_step >= len(self.df) - 15
         truncated = False
+        
         if done:
             return self._get_obs(), 0.0, done, truncated, {}
-        future_price = float(self.df.iloc[self.current_step + 14]["close"])
+
+        future_step = min(self.current_step + 14, len(self.df) - 1)
+        future_price = float(self.df.iloc[future_step]["close"])
+        
+        # 🛡️ NEUTRALIZAR NaNs EN PRECIOS (Origen de explosión de gradientes)
+        if np.isnan(current_price) or np.isinf(current_price): current_price = 1.0
+        if np.isnan(future_price) or np.isinf(future_price): future_price = current_price
+        
         price_diff = (future_price - current_price) * 100000       
         reward = 0.0
+
         if action >= 2:                              
             is_buy = (action >= 11)
+            self.filter_stats["total_ops"] += 1
+            
             if self.teacher_mode:
-                vsa_ok = last_vsa > 1.1
-                lazarus_ok = (last_fer >= 0.30 or abs(last_z) >= 1.2)
-                if not vsa_ok or not lazarus_ok:
-                    reward -= 50.0 
+                vsa_ok = last_vsa > 0.85
+                lazarus_ok = last_fer >= 0.28
+                if is_buy:
+                    ict_ok = (ict_fvg != -1 and ict_sw != -1)
+                    ap_ok = rel_cl >= 0.15
+                else:
+                    ict_ok = (ict_fvg != 1 and ict_sw != 1)
+                    ap_ok = rel_cl <= 0.85
+                if not (vsa_ok and lazarus_ok and ict_ok and ap_ok):
+                    reward -= 45.0 # Penalización severa
+                    self.filter_stats["violations"] += 1
+                else:
+                    reward += 2.0 # Bonus de disciplina
+            
             pips = price_diff if is_buy else -price_diff
+            if np.isnan(pips) or np.isinf(pips): pips = 0.0
+            
             reward += pips
-            if pips < 0: reward *= 1.5
-        elif action == 1:        
-            reward = 0.0                              
-        else:       
-            if self.teacher_mode:
-                vsa_ok = last_vsa > 1.1
-                lazarus_ok = (last_fer >= 0.30 or abs(last_z) >= 1.2)
-                if not vsa_ok or not lazarus_ok:
-                    reward += 5.0 
+            if pips < 0: 
+                # 🧠 Castigo Severo (Fase 2): Penalizar pérdidas 3x más fuerte para evitar testarudez contra-tendencial
+                reward = reward - abs(pips) * 3.0 
             else:
-                reward -= 0.5
+                # 🧠 Bonus Pips: Premia ligeramente ganar
+                reward += abs(pips) * 0.5
+            
+        elif action == 1: # HOLD
+            # 🧠 Premiar contención en mercados caóticos/laterales
+            if self.teacher_mode:
+                if last_vsa < 0.85 or last_fer < 0.28:
+                    reward += 10.0
+                    
+        # Último seguro anti-nan en el reward
+        if np.isnan(reward) or np.isinf(reward): reward = 0.0
+        
+        if self.teacher_mode and self.filter_stats["total_ops"] > 50 and not self.integration_reported:
+            error_rate = self.filter_stats["violations"] / self.filter_stats["total_ops"]
+            if error_rate < 0.02:
+                print("\n[INFO] 🧠 Filtros ICT y Anti-Parabólica INTEGRADOS AL 100% en la red.")
+                self.integration_reported = True
+
         return self._get_obs(), float(reward), done, truncated, {}
 def build_shadow_trainer():
     print("==========================================================")
@@ -83,7 +139,8 @@ def build_shadow_trainer():
         try:
             df = None
             if os.path.exists(CSV_PATH):
-                df_raw = pd.read_csv(CSV_PATH, names=["ts", "action", "close", "obs"], on_bad_lines="skip")
+                # Nuevo Formato: ts;action;close;ict_fvg;ict_sw;rel_cl;fer;vsa;obs
+                df_raw = pd.read_csv(CSV_PATH, sep=";", names=["ts", "action", "close", "ict_fvg", "ict_sw", "rel_cl", "fer", "vsa", "obs"], on_bad_lines="skip")
                 if len(df_raw) >= 100:
                     print(f"\n[SHADOW] Datos LIVE detectados ({len(df_raw)} ticks). Iniciando Sinapsis...")
                     df = df_raw
@@ -134,16 +191,47 @@ def build_shadow_trainer():
                         time.sleep(60)
                         continue
             if df is not None:
-                is_afk = df.iloc[0].get("action", 0) == 0 
-                env = ShadowMarketEnv(df, teacher_mode=is_afk)
+                is_afk = df.iloc[0].get("action", 0) == 0
                 active_model_path = NEW_MODEL_PATH if os.path.exists(NEW_MODEL_PATH) else MODEL_PATH
+                
+                # Importar Wrappers
+                from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+                
+                # Auto-detectar el espacio de observación del modelo cargado (sin env = sin conflicto)
+                try:
+                    probe = RecurrentPPO.load(active_model_path, device="cpu")
+                    obs_cols = probe.observation_space.shape[-1]
+                    del probe
+                except:
+                    obs_cols = 26  # Fallback a V10/V12
+
+                # Crear el env con el tamaño correcto del modelo detectado.
+                # FIX: use a factory lambda so DummyVecEnv gets a *new* instance,
+                #      not the same object reused across resets (causes state bleed).
+                _df_snapshot   = df        # capture in closure
+                _is_afk        = is_afk
+                _obs_cols      = obs_cols
+                def make_env():
+                    return ShadowMarketEnv(_df_snapshot, teacher_mode=_is_afk, obs_cols=_obs_cols)
+                v_env = DummyVecEnv([make_env])
+                norm_path = os.path.join(MODEL_DIR, "vec_normalize.pkl")
+                if os.path.exists(norm_path):
+                    try:
+                        v_env = VecNormalize.load(norm_path, v_env)
+                        v_env.training = True  # Permite actualizar la normalización con los nuevos datos
+                        v_env.norm_reward = False
+                    except:
+                        pass
+                
                 import io
                 from contextlib import redirect_stdout
                 with io.StringIO() as buf, redirect_stdout(buf):
-                    model = RecurrentPPO.load(active_model_path, env=env, device="cpu") 
+                    model = RecurrentPPO.load(active_model_path, env=v_env, device="cpu")
                     model.learn(total_timesteps=len(df), reset_num_timesteps=False)
                     model.save(NEW_MODEL_PATH)
-                    full_log = buf.getvalue()
+                    if isinstance(v_env, VecNormalize):
+                        v_env.save(norm_path) # Guardar la matemática actualizada
+                    full_log = buf.getvalue()  # FIX: removed duplicate getvalue() call
                 try:
                     stats_path = os.path.join(ROOT_DIR, "reports", "shadow_stats.txt")
                     with open(stats_path, "w") as f:
@@ -153,9 +241,23 @@ def build_shadow_trainer():
                         f.write("-" * 30 + "\n")
                         f.write(full_log)                                  
                 except: pass
-                if os.path.exists(CSV_PATH): os.remove(CSV_PATH)
+                
+                # 📦 ROTACIÓN DE DATOS (Fase 2): Nunca borrar la experiencia, archivarla
+                if os.path.exists(CSV_PATH):
+                    import shutil
+                    from datetime import datetime
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    backup_path = CSV_PATH.replace(".csv", f"_{ts}.csv")
+                    try:
+                        shutil.move(CSV_PATH, backup_path)
+                        import glob
+                        backups = sorted(glob.glob(os.path.join(MEMORY_DIR, "market_experience_*.csv")))
+                        while len(backups) > 5:
+                            os.remove(backups.pop(0))
+                    except:
+                        pass
         except Exception as e:
             print(f"[SHADOW ERROR] {e}")
-        time.sleep(300)                                  
+        time.sleep(1800)   # 30 min: reducir interrupciones al bot (antes 5 min era excesivo)
 if __name__ == "__main__":
     build_shadow_trainer()

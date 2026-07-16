@@ -25,7 +25,10 @@ import matplotlib.patches as mpatches
 from matplotlib.lines import Line2D
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from sb3_contrib import RecurrentPPO
-from indicators import (
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
+from env.indicators import (
     load_and_preprocess_data,
     add_quant_features,
     add_hmm_regime_proxy,
@@ -33,10 +36,15 @@ from indicators import (
     add_golden_strategy_features,
     add_volume_sniper_features,
 )
-from trading_env import ForexTradingEnv
-FILE_PATH  = "data/EURUSD_Hourly_2010_2026.csv"
-MODEL_PATH = "model_eurusd_titany_v12_sniper.zip"
-VEC_NORM   = "vec_normalize.pkl"
+from env.trading_env import ForexTradingEnv
+
+_ROOT_DIR  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+FILE_PATH  = config.MASTER_CSV
+# FIX: use absolute paths so the script works from any CWD
+MODEL_PATH = os.path.join(config.MODELS_DIR, "model_eurusd_titany_v12_sniper.zip")
+VEC_NORM   = os.path.join(config.MODELS_DIR, "vec_normalize.pkl")
+REPORTS_DIR = os.path.join(_ROOT_DIR, "reports")
 SL_OPTS    = [20, 50, 100]
 TP_OPTS    = [40, 100, 200]
 WIN        = 30
@@ -182,7 +190,8 @@ def plot_trades(prices, trades, equity_curve, window=None):
     ax2.xaxis.label.set_color("white")
     ax2.grid(True, color="#21262d", linewidth=0.5)
     plt.tight_layout()
-    out = "reporte_trades_visualizados.png"
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+    out = os.path.join(REPORTS_DIR, "reporte_trades_visualizados.png")
     plt.savefig(out, dpi=150, facecolor=fig.get_facecolor())
     print(f"✅ Gráfico guardado → {out}")
     return fig
@@ -214,8 +223,10 @@ def print_summary(trades):
     print(f"  Pérdida media     :  {avg_loss:.1f} pips")
     print("═"*52 + "\n")
     df_t = pd.DataFrame(trades)
-    df_t.to_csv("reporte_trades_detalle.csv", index=False)
-    print("✅ Detalle guardado → reporte_trades_detalle.csv\n")
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+    csv_out = os.path.join(REPORTS_DIR, "reporte_trades_detalle.csv")
+    df_t.to_csv(csv_out, index=False)
+    print(f"✅ Detalle guardado → {csv_out}\n")
 def main():
     parser = argparse.ArgumentParser(description="TITANY AI Trade Visualizer")
     parser.add_argument("--headless", action="store_true",
@@ -228,6 +239,8 @@ def main():
     print("📂 Cargando datos...")
     df, feature_cols = load_and_preprocess_data(FILE_PATH)
     df, quant_cols   = add_quant_features(df);           feature_cols.extend(quant_cols)
+    # FIX: include regime_proxy to match the training pipeline
+    df, regime_cols  = add_hmm_regime_proxy(df);         feature_cols.extend(regime_cols)
     df, phys_cols    = add_physics_features(df);          feature_cols.extend(phys_cols)
     df, gold_cols    = add_golden_strategy_features(df);  feature_cols.extend(gold_cols)
     df, sniper_cols  = add_volume_sniper_features(df);   feature_cols.extend(sniper_cols)
