@@ -28,19 +28,24 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # Core ML / RL — no MT5 (Windows-only), no customtkinter (needs display)
           pip install \
             pytest pytest-timeout \
             "stable-baselines3>=2.0" \
             "sb3-contrib>=2.0" \
             gymnasium \
-            numpy pandas \
+            numpy "pandas>=2.0" \
             hmmlearn \
             scipy \
             matplotlib \
-            requests
-          # pandas-ta: optional, tests fall back to synthetic data on failure
-          pip install pandas-ta || echo "pandas-ta install skipped"
+            requests \
+            "pandas-ta>=0.3.14b"
+
+      - name: Verify imports
+        run: |
+          python -c "import numpy, pandas, gymnasium, hmmlearn; print('Core imports OK')"
+          python -c "import pandas_ta; print('pandas_ta OK')" || echo "pandas_ta optional — skipping TA-dependent tests"
+          python -c "import sys; sys.path.insert(0,'.');  from env.indicators import _safe_div; print('indicators OK')"
+          python -c "import sys; sys.path.insert(0,'.'); from env.trading_env import ForexTradingEnv; print('trading_env OK')"
 
       - name: Run unit tests
         run: |
@@ -50,4 +55,3 @@ jobs:
             -k "not csv and not integration"
         env:
           PYTHONPATH: .
-          # No MT5 credentials — tests use synthetic data only
