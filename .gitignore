@@ -8,9 +8,12 @@ __pycache__/
 # ── Virtual environments ───────────────────────────────────────────────────────
 .venv/
 venv/
-ENV/
+ENV/          # solo mayúsculas — env/ (el módulo del proyecto) NO se ignora
 env.bak/
 venv.bak/
+# Asegurar que env/ (módulo Python del proyecto) nunca se ignore
+!env/
+!env/*.py
 
 # ── Secrets — NEVER commit credentials ────────────────────────────────────────
 .env
