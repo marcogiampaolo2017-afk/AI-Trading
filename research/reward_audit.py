@@ -49,7 +49,7 @@ def build_test_slice(bars: int):
     return df, test_df.head(bars + config.WIN_SIZE).reset_index(drop=True), feature_cols
 
 
-def make_env(test_df, feature_cols, teacher_mode: bool):
+def make_env(test_df, feature_cols, teacher_mode: bool, dd_scale: float = 1.0):
     return ForexTradingEnv(
         df=test_df,
         window_size=config.WIN_SIZE,
@@ -65,6 +65,7 @@ def make_env(test_df, feature_cols, teacher_mode: bool):
         spread_pips=1.0,
         max_slippage_pips=0.2,
         teacher_mode=teacher_mode,
+        drawdown_penalty_scale=dd_scale,
         allow_manual_close=config.ALLOW_MANUAL_CLOSE,
     )
 
@@ -94,9 +95,10 @@ def load_model_policy(feature_cols: list[str]):
     return model, vec
 
 
-def run_policy(policy, bars, teacher_mode, data, model_bundle: tuple[Any, Any] | None = None):
+def run_policy(policy, bars, teacher_mode, data, dd_scale: float = 1.0,
+               model_bundle: tuple[Any, Any] | None = None):
     _full, test_df, feature_cols = data
-    env = make_env(test_df, feature_cols, teacher_mode)
+    env = make_env(test_df, feature_cols, teacher_mode, dd_scale)
     obs, _ = env.reset(seed=7)
     rng = np.random.default_rng(7)
 
@@ -151,6 +153,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Auditoría del reward")
     parser.add_argument("--bars", type=int, default=3000)
     parser.add_argument("--policies", default="hold,random,model")
+    parser.add_argument("--dd-penalty-scale", type=float, default=1.0,
+                        help="escala del castigo por drawdown por paso (0.0 lo desactiva)")
+    parser.add_argument("--tag", default=None, help="sufijo del CSV de salida")
     args = parser.parse_args(argv)
     policies = [p.strip() for p in args.policies.split(",") if p.strip()]
 
@@ -169,9 +174,11 @@ def main(argv=None):
         for policy in policies:
             if policy == "model" and model_bundle is None:
                 continue
-            res = run_policy(policy, args.bars, teacher, _SLICE, model_bundle)
+            res = run_policy(policy, args.bars, teacher, _SLICE,
+                             args.dd_penalty_scale, model_bundle)
             res["teacher_mode"] = teacher
             res["policy"] = policy
+            res["dd_scale"] = args.dd_penalty_scale
             rows.append(res)
             print("  " + policy.ljust(6) + " | teacher=" + ("on " if teacher else "off")
                   + " | steps=" + str(res["steps"]) + " trades=" + str(res["trades"])
@@ -180,7 +187,8 @@ def main(argv=None):
 
     # rows ya vienen ordenadas: teacher_mode False/True y luego por política
     table = pd.DataFrame(rows)[
-        ["policy", "teacher_mode", "steps", "trades", "equity", "pnl", "shaping", "total"] + TERMS
+        ["policy", "teacher_mode", "dd_scale", "steps", "trades", "equity",
+         "pnl", "shaping", "total"] + TERMS
     ]
 
     pd.set_option("display.width", 200)
@@ -190,7 +198,8 @@ def main(argv=None):
 
     reports = os.path.join(_ROOT_DIR, "reports")
     os.makedirs(reports, exist_ok=True)
-    out = os.path.join(reports, "reward_audit.csv")
+    suffix = ("_" + args.tag) if args.tag else ""
+    out = os.path.join(reports, f"reward_audit{suffix}.csv")
     table.to_csv(out, index=False)
     print("\nCSV guardado en " + out)
 
