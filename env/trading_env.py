@@ -1,15 +1,15 @@
 from __future__ import annotations
+
+from typing import Any
+
 import numpy as np
 import pandas as pd
 import math
-try:
-    import gymnasium as gym
-    from gymnasium import spaces
-    _GYMNASIUM = True
-except ImportError:
-    import gym
-    from gym import spaces
-    _GYMNASIUM = False
+import gymnasium as gym
+from gymnasium import spaces
+
+# Dependencia obligatoria (Requirements.txt): API gymnasium única (5-tuple).
+# Se elimina el fallback a `gym`: mezclar ambas APIs era fuente de errores.
 class ForexTradingEnv(gym.Env):
     """
     ENTORNO DE SIMULACIÓN DE TRADING:
@@ -87,7 +87,10 @@ class ForexTradingEnv(gym.Env):
         # When False the model can only HOLD or OPEN; all exits are via SL/TP.
         # This prevents the "cut winners short, let losers run" pattern that
         # caused TP to be hit only 1% of the time in the previous backtest.
-        self.action_map = [("HOLD", None, None, None)]
+        # (tipo, dirección, sl_pips, tp_pips) — los None son válidos para HOLD/CLOSE
+        self.action_map: list[tuple[str, int | None, float | None, float | None]] = [
+            ("HOLD", None, None, None)
+        ]
         if self.allow_manual_close:
             self.action_map.append(("CLOSE", None, None, None))
         if sl_tp_pairs is not None:
@@ -100,11 +103,11 @@ class ForexTradingEnv(gym.Env):
                 for sl in self.sl_options:
                     for tp in self.tp_options:
                         self.action_map.append(("OPEN", direction, float(sl), float(tp)))
-        self.action_space = spaces.Discrete(len(self.action_map))
+        self.action_space: spaces.Discrete = spaces.Discrete(len(self.action_map))
         self.base_num_features = len(self.feature_columns)
         self.state_num_features = 3
         self.num_features = self.base_num_features + self.state_num_features
-        self.observation_space = spaces.Box(
+        self.observation_space: spaces.Box = spaces.Box(
             low=-np.inf,
             high=np.inf,
             shape=(self.window_size, self.num_features),
@@ -116,10 +119,11 @@ class ForexTradingEnv(gym.Env):
         self.steps_in_episode = 0
         self.terminated = False
         self.truncated = False
-        self.position = 0                                         
-        self.entry_price = None
-        self.sl_price = None
-        self.tp_price = None
+        self.position = 0
+        self.entry_price: float | None = None
+        self.sl_price: float | None = None
+        self.tp_price: float | None = None
+        self.max_observed_pips: float = 0.0
         self.time_in_trade = 0
         self.prev_unrealized_pips = 0.0
         self.initial_equity_usd = self._initial_equity_param
@@ -216,11 +220,15 @@ class ForexTradingEnv(gym.Env):
             "sl_price": self.sl_price,
             "tp_price": self.tp_price
         }
-    def _close_position(self, reason: str, exit_price: float):
+    def _close_position(self, reason: str, exit_price: float) -> float:
+        entry_price = self.entry_price
+        if self.position == 0 or entry_price is None:
+            # Sin posición abierta (o estado inconsistente) no hay nada que cerrar.
+            return 0.0
         if self.position == 1:
-            pnl_price = exit_price - self.entry_price
+            pnl_price = exit_price - entry_price
         else:
-            pnl_price = self.entry_price - exit_price
+            pnl_price = entry_price - exit_price
         realized_pips = pnl_price / self.pip_value
         cost_pips = self._cost_pips_round_trip()
         net_pips = realized_pips - cost_pips
@@ -262,13 +270,17 @@ class ForexTradingEnv(gym.Env):
         self.prev_unrealized_pips = 0.0
         self.last_trade_info = trade_info
         return adjusted_reward
-    def _check_sl_tp_intrabar_and_maybe_close(self) -> float:
+    def _check_sl_tp_intrabar_and_maybe_close(self) -> float | None:
         """
         Checks SL/TP on the *next bar* range [Low, High].
         Conservative rule if both touched: assume SL hits first (worst case).
         Returns realized net pips if closed; otherwise None.
         """
         if self.position == 0:
+            return None
+        sl_price = self.sl_price
+        tp_price = self.tp_price
+        if sl_price is None or tp_price is None:
             return None
         if self.current_step >= self.n_steps - 2:
             exit_price = float(self.df.loc[self.current_step, "Close"])
@@ -277,23 +289,23 @@ class ForexTradingEnv(gym.Env):
         next_high = float(self.df.loc[self.current_step + 1, "High"])
         next_low = float(self.df.loc[self.current_step + 1, "Low"])
         if self.position == 1:
-            sl_hit = next_low <= self.sl_price
-            tp_hit = next_high >= self.tp_price
+            sl_hit = next_low <= sl_price
+            tp_hit = next_high >= tp_price
             if sl_hit and tp_hit:
-                return self._close_position("SL_AND_TP_SAME_BAR_SL_FIRST", self.sl_price)
+                return self._close_position("SL_AND_TP_SAME_BAR_SL_FIRST", sl_price)
             elif sl_hit:
-                return self._close_position("SL_HIT", self.sl_price)
+                return self._close_position("SL_HIT", sl_price)
             elif tp_hit:
-                return self._close_position("TP_HIT", self.tp_price)
+                return self._close_position("TP_HIT", tp_price)
         else:
-            sl_hit = next_high >= self.sl_price
-            tp_hit = next_low <= self.tp_price
+            sl_hit = next_high >= sl_price
+            tp_hit = next_low <= tp_price
             if sl_hit and tp_hit:
-                return self._close_position("SL_AND_TP_SAME_BAR_SL_FIRST", self.sl_price)
+                return self._close_position("SL_AND_TP_SAME_BAR_SL_FIRST", sl_price)
             elif sl_hit:
-                return self._close_position("SL_HIT", self.sl_price)
+                return self._close_position("SL_HIT", sl_price)
             elif tp_hit:
-                return self._close_position("TP_HIT", self.tp_price)
+                return self._close_position("TP_HIT", tp_price)
         return None
     def _calculate_phi_score(self) -> float:
         """
@@ -333,16 +345,11 @@ class ForexTradingEnv(gym.Env):
         self.steps_in_episode = 0
         self.terminated = False
         self.truncated = False
-        obs = self._get_observation()
-        if _GYMNASIUM:
-            return obs, {}
-        return obs
-    def step(self, action: int):
+        return self._get_observation(), {}
+    def step(self, action: int | np.integer[Any]):
+        action = int(action)   # acepta numpy.int64 (np.random.randint, argmax, etc.)
         if self.terminated or self.truncated:
-            obs = self._get_observation()
-            if _GYMNASIUM:
-                return obs, 0.0, True, False, {}
-            return obs, 0.0, True, {}
+            return self._get_observation(), 0.0, True, False, {}
         self.steps_in_episode += 1
         reward_pips = 0.0
         info = {}
@@ -377,14 +384,17 @@ class ForexTradingEnv(gym.Env):
                         reward_pips += 5.0                                     
                     elif act_type == "CLOSE":
                         reward_pips -= 10.0                                                      
-                m_p = getattr(self, "max_observed_pips", 0)
-                self.max_observed_pips = max(m_p, cur_unreal)
+                self.max_observed_pips = max(self.max_observed_pips, cur_unreal)
                 if self.max_observed_pips > 25.0 and cur_unreal < 5.0:
                     reward_pips -= 15.0                                            
             else:
                 self.max_observed_pips = 0
         chaos_penalty = 0.0
         if act_type == "OPEN":
+            if direction is None or sl_pips is None or tp_pips is None:
+                raise ValueError(
+                    f"Acción OPEN incompleta en action_map: {self.action_map[int(action)]!r}"
+                )
             phi_score = self._calculate_phi_score()
             is_causally_safe = self._causal_what_if_simulator()
             if phi_score < 0.3 or not is_causally_safe:
@@ -458,11 +468,7 @@ class ForexTradingEnv(gym.Env):
             "reward_pips": float(reward_pips),
             "last_trade_info": self.last_trade_info
         })
-        if _GYMNASIUM:
-            return obs, reward, self.terminated, self.truncated, info
-        else:
-            done = bool(self.terminated or self.truncated)
-            return obs, reward, done, info
+        return obs, reward, self.terminated, self.truncated, info
     def render(self):
         print(
             f"Step={self.current_step} | Equity=${self.equity_usd:,.2f} | "

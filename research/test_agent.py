@@ -50,8 +50,8 @@ def build_feature_pipeline(csv_path):
     df, s = add_volume_sniper_features(df);    feature_cols.extend(s)
 
     # Apply same correlation filter as training
-    corr = df[feature_cols].corr().abs()
-    upper = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
+    corr = df.loc[:, feature_cols].corr().abs()
+    upper = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool), other=np.nan)
     _PROTECTED = {"regime_proxy"}
     to_drop = [c for c in upper.columns if any(upper[c] > 0.95) and c not in _PROTECTED]
     feature_cols = [c for c in feature_cols if c not in to_drop]
@@ -293,7 +293,7 @@ def main():
         fig.text(0.5, 0.01, txt, ha="center", fontsize=10,
                  bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.4))
 
-    plt.tight_layout(rect=[0, 0.04, 1, 1])
+    plt.tight_layout(rect=(0, 0.04, 1, 1))
     report_path = os.path.join(_ROOT_DIR, "reports", "v12_backtest_report.png")
     plt.savefig(report_path, dpi=150)
     print(f"Chart saved: reports/v12_backtest_report.png")

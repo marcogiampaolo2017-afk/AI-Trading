@@ -25,7 +25,8 @@ class GeneticPredictor:
             try:
                 with open(model_path, 'rb') as f:
                     self.model = dill.load(f)
-                self.compiled_func = gp_strategy_progress.toolbox.compile(expr=self.model)
+                # Toolbox.compile() se registra en runtime (deap) -> sin tipos estáticos
+                self.compiled_func = gp_strategy_progress.toolbox.compile(expr=self.model)  # type: ignore[attr-defined]
                 print(f"🧬 [GENETIC ENGINE] Cerebro evolutivo cargado: {len(self.model)} nodos matemáticos activos.")
             except Exception as e:
                 print(f"❌ [GENETIC ENGINE] Error al cargar la fórmula genética: {e}")

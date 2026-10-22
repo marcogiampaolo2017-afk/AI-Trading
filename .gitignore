@@ -44,8 +44,16 @@ reports/*.txt
 # ── Data files (large CSVs — distribute separately) ──────────────────────────
 data/*.csv
 
+# ── Local tool / editor state (per-machine, never shared) ────────────────────
+.obsidian/
+.kilo/
+.vscode/settings.local.json
+_mplconfig/
+_tmp/
+
 # ── Misc ──────────────────────────────────────────────────────────────────────
 *.log
+*.err
 log_horita.txt
 stop_training.flag
 *.bak

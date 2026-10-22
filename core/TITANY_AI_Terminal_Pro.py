@@ -19,7 +19,21 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from env import indicators
 import config   # shared SL_TP_PAIRS and constants — must match training
 import json
+from typing import Any
 from tkinter import messagebox
+
+
+def _configure_console():
+    """Consola Windows (cp1252/cp850): evita UnicodeEncodeError con los emojis de los logs."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except ValueError:
+                pass
+
+
 class AcademyWindow(ctk.CTkToplevel):
     def __init__(self, parent):
         super().__init__(parent)
@@ -271,9 +285,14 @@ class TitanySync:
             if response.status_code == 200:
                 try:
                     data = response.json()
-                    if isinstance(data, list) and len(data) > 0:
+                    if isinstance(data, list):
+                        if not data:
+                            return False
                         data = data[-1]
-                    return data.get("kill_bot", False) == True or data.get("kill_bot", False) == "true"
+                    if not isinstance(data, dict):
+                        return False
+                    kill = data.get("kill_bot", False)
+                    return kill is True or kill == "true" or kill == 1
                 except ValueError:
                     pass
             else:
@@ -388,6 +407,9 @@ class NeuroQuantEngine:
                 best_action = act
         return best_action if best_action else actions_list[0]
 class TitanyBotApp(ctk.CTk):
+    # Widgets creados dinámicamente por create_premium_input() vía setattr()
+    entry_lots: Any
+    entry_loss: Any
     """
     Controla toda la parte visual: Gráficos, botones, logs y
     la conexión de hilos con la lógica de trading.
@@ -854,8 +876,9 @@ class TitanyBotApp(ctk.CTk):
                 try:
                     # Cargar SIN env: evita toda comparación de obs_space. Perfecto para inferencia.
                     model = RecurrentPPO.load(cpath, device="cpu")
-                    n_ind_loaded = model.observation_space.shape[-1]
-                    self.add_log(f"💎 AI: [{candidate}] cargado — obs({model.observation_space.shape}) ✓")
+                    obs_shape = getattr(model.observation_space, "shape", None)
+                    n_ind_loaded = int(obs_shape[-1]) if obs_shape else 30
+                    self.add_log(f"💎 AI: [{candidate}] cargado — obs({obs_shape}) ✓")
                     break
                 except Exception as e_c:
                     self.add_log(f"⚠️ AI: [{candidate}] falló: {e_c}")
@@ -867,7 +890,8 @@ class TitanyBotApp(ctk.CTk):
             self.add_log(f"❌ AI: Error crítico en carga: {e}")
             return
         try:
-             self.model_features = model.observation_space.shape[-1]
+             obs_shape = getattr(model.observation_space, "shape", None)
+             self.model_features = int(obs_shape[-1]) if obs_shape else 30
              self.add_log(f"🧠 ARQUITECTURA DETECTADA: {self.model_features} cols de entrada.")
         except:
              self.model_features = 30  # V12 Sniper: 27 features + 3 state
@@ -894,9 +918,9 @@ class TitanyBotApp(ctk.CTk):
         # Build action map EXACTLY as in training (config.SL_TP_PAIRS, no CLOSE).
         # Critical: action index 0=HOLD, 1=OPEN_BUY(sl,tp), 2=OPEN_SELL(sl,tp), ...
         # If CLOSE was here (old code) → action 1 was CLOSE, action 2 was a wrong OPEN.
-        actions = [("HOLD", 0, 0, 0)]
+        actions: list[tuple[str, int, float, float]] = [("HOLD", 0, 0.0, 0.0)]
         if config.ALLOW_MANUAL_CLOSE:
-            actions.append(("CLOSE", 0, 0, 0))
+            actions.append(("CLOSE", 0, 0.0, 0.0))
         for d in [0, 1]:
             for sl, tp in config.SL_TP_PAIRS:
                 actions.append(("OPEN", d, float(sl), float(tp)))
@@ -943,8 +967,11 @@ class TitanyBotApp(ctk.CTk):
         while self.running:
             if cycle_count == 0:
                 print("🟢 [AGA-MORA AI] Operación Esmeralda - Sistema de Grado Especial Iniciado.")
-                if getattr(self, "genetic_ai", None) and getattr(self.genetic_ai, "compiled_func", None):
-                    self.add_log(f"🧬 GENÉTICA: Cerebro evolutivo de DEAP ({len(self.genetic_ai.model)} nodos) ONLINE.")
+                genetic_ai = getattr(self, "genetic_ai", None)
+                if genetic_ai is not None and getattr(genetic_ai, "compiled_func", None):
+                    gp_model = getattr(genetic_ai, "model", None)
+                    n_nodes = len(gp_model) if gp_model is not None else 0
+                    self.add_log(f"🧬 GENÉTICA: Cerebro evolutivo de DEAP ({n_nodes} nodos) ONLINE.")
                 else:
                     self.add_log("⚠️ GENÉTICA: El ADN evolutivo está inactivo o falló la carga.")
                 all_pos = mt5.positions_get()
@@ -1549,8 +1576,9 @@ class TitanyBotApp(ctk.CTk):
                                         allow_entry = False
                                         if int(time.time()) % 30 == 0:
                                             self.add_log("🏛️ ICT FILTER: Bloqueando COMPRA. Precio rebotando en Liquidity Sweep o FVG Bajista.")
-                        if res[0] == "OPEN" and allow_entry and getattr(self, "genetic_ai", None):
-                            gen_signal = self.genetic_ai.get_signal()
+                        genetic_ai = getattr(self, "genetic_ai", None)
+                        if res[0] == "OPEN" and allow_entry and genetic_ai is not None:
+                            gen_signal = genetic_ai.get_signal()
                             if gen_signal != 0.0:
                                 if res[1] == 1 and gen_signal < -20:
                                     allow_entry = False
@@ -2020,6 +2048,7 @@ class TitanyBotApp(ctk.CTk):
         self.after(100, self._check_log_queue)   # 100 ms → responsive UI
 if __name__ == "__main__":
     import sys
+    _configure_console()
     if "--headless" in sys.argv:
         BOT_MODE = 3
         print("🚀 INICIANDO EN MODO TURBO (HEADLESS)...")

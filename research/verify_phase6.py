@@ -28,11 +28,7 @@ def verify():
     print(f"Initial Obs Shape: {obs.shape}")
     for i in range(5):
         action = env.action_space.sample()
-        step_res = env.step(action)
-        if len(step_res) == 5:
-            obs, reward, terminated, truncated, info = step_res
-        else:
-            obs, reward, done, info = step_res
+        obs, reward, terminated, truncated, info = env.step(action)
         print(f"Step {i}: Action={action} | Reward={reward:.6f} | Total Equity={info['equity_usd']}")
     print("\n✅ PHASE 6 INTEGRATION VERIFIED.")
 if __name__ == "__main__":

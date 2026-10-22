@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import pandas as pd
 import numpy as np
@@ -6,6 +7,28 @@ import gymnasium as gym
 from gymnasium import spaces
 from sb3_contrib import RecurrentPPO
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT_DIR not in sys.path:   # permite `python core/titany_continuous_trainer.py`
+    sys.path.insert(0, ROOT_DIR)
+import config
+
+
+def build_action_map() -> list[tuple[str, int | None, float | None, float | None]]:
+    """Mismo action space que entrenamiento y live (config.SL_TP_PAIRS).
+
+    0 = HOLD, 1 = OPEN dirección 0 (SELL), 2 = OPEN dirección 1 (BUY), ...
+    Antes el ShadowMarketEnv declaraba Discrete(20) con un mapeo legacy
+    (action >= 2 / >= 11): el modelo reentrenado quedaba incompatible con
+    el action space de 3 acciones que usa el terminal.
+    """
+    actions: list[tuple[str, int | None, float | None, float | None]] = [
+        ("HOLD", None, None, None)
+    ]
+    if config.ALLOW_MANUAL_CLOSE:
+        actions.append(("CLOSE", None, None, None))
+    for direction in (0, 1):
+        for sl, tp in config.SL_TP_PAIRS:
+            actions.append(("OPEN", direction, float(sl), float(tp)))
+    return actions
 MEMORY_DIR = os.path.join(ROOT_DIR, "brain_memory")
 CSV_PATH = os.path.join(MEMORY_DIR, "market_experience.csv")
 MODEL_DIR = os.path.join(ROOT_DIR, "models")
@@ -22,7 +45,9 @@ class ShadowMarketEnv(gym.Env):
         self.teacher_mode = teacher_mode
         self.current_step = 0
         self.obs_cols = obs_cols  # Neuronas totales del modelo cargado
-        self.action_space = spaces.Discrete(20)
+        # Coincide con config/env/terminal: 3 acciones (HOLD, OPEN short, OPEN long).
+        self.action_map = build_action_map()
+        self.action_space = spaces.Discrete(len(self.action_map))
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(30, obs_cols), dtype=np.float32)
         
         # Estadísticas de Integración de Filtros
@@ -85,8 +110,9 @@ class ShadowMarketEnv(gym.Env):
         price_diff = (future_price - current_price) * 100000       
         reward = 0.0
 
-        if action >= 2:                              
-            is_buy = (action >= 11)
+        act_type, direction, _sl_pips, _tp_pips = self.action_map[int(action)]
+        if act_type == "OPEN" and direction is not None:
+            is_buy = direction == 1
             self.filter_stats["total_ops"] += 1
             
             if self.teacher_mode:
@@ -115,7 +141,7 @@ class ShadowMarketEnv(gym.Env):
                 # 🧠 Bonus Pips: Premia ligeramente ganar
                 reward += abs(pips) * 0.5
             
-        elif action == 1: # HOLD
+        elif act_type == "HOLD":
             # 🧠 Premiar contención en mercados caóticos/laterales
             if self.teacher_mode:
                 if last_vsa < 0.85 or last_fer < 0.28:
@@ -200,7 +226,8 @@ def build_shadow_trainer():
                 # Auto-detectar el espacio de observación del modelo cargado (sin env = sin conflicto)
                 try:
                     probe = RecurrentPPO.load(active_model_path, device="cpu")
-                    obs_cols = probe.observation_space.shape[-1]
+                    obs_shape = getattr(probe.observation_space, "shape", None)
+                    obs_cols = int(obs_shape[-1]) if obs_shape else 26
                     del probe
                 except:
                     obs_cols = 26  # Fallback a V10/V12

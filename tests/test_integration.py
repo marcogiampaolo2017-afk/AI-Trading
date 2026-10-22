@@ -173,8 +173,7 @@ class TestPipelineToEnv:
         df, feature_cols = full_pipeline
         env = self._make_env(df, feature_cols)
         env.reset()
-        result = env.step(0)   # HOLD
-        info = result[-1] if isinstance(result[-1], dict) else result[3]
+        _, _, _, _, info = env.step(0)   # HOLD
         eq = info.get("equity_usd", 0.0)
         assert math.isfinite(eq), f"equity_usd no finito: {eq}"
         assert eq > 0, f"equity_usd no positivo: {eq}"
@@ -196,18 +195,23 @@ class TestPipelineToEnv:
                 break
 
     def test_close_resets_position(self, full_pipeline):
-        """OPEN seguido de CLOSE → position == 0."""
+        """OPEN seguido de CLOSE → position == 0 (solo si existe la acción CLOSE)."""
         df, feature_cols = full_pipeline
         env = self._make_env(df, feature_cols)
+        close_actions = [i for i, a in enumerate(env.action_map) if a[0] == "CLOSE"]
+        if not close_actions:
+            pytest.skip(
+                "ALLOW_MANUAL_CLOSE=False: el modelo solo decide cuándo abrir; "
+                "las salidas van por SL/TP, así que el action space no tiene CLOSE."
+            )
         env.reset()
-        # Open a long position manually
-        env.position    = 0
+        env.position = 0
         first_open = next(
             i for i, a in enumerate(env.action_map) if a[0] == "OPEN"
         )
         env.step(first_open)
         if env.position != 0:
-            env.step(1)  # action index 1 = CLOSE
+            env.step(close_actions[0])
             assert env.position == 0, "CLOSE debería resetear position a 0"
 
 

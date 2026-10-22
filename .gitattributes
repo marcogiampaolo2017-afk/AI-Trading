@@ -1,0 +1,39 @@
+# ── Line endings ───────────────────────────────────────────────────────────────
+# Los objetos guardados en Git usan siempre LF; el working tree aplica el
+# final de línea de la plataforma (core.autocrlf en Windows).
+# Sin esto, un archivo UTF-16 (como el viejo Requirements.txt) se detecta como
+# binario y los diffs dejan de ser legibles.
+* text=auto
+
+# ── Formatos de texto ──────────────────────────────────────────────────────────
+*.py            text
+*.pyi           text
+*.md            text
+*.txt           text
+*.json          text
+*.yml           text
+*.yaml          text
+*.toml          text
+*.cfg           text
+*.ini           text
+*.sh            text
+*.bat           text
+*.ps1           text
+.gitignore      text
+.gitattributes  text
+
+# ── Binarios / artefactos generados (sin diff, sin conversión) ─────────────────
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.ico     binary
+*.pdf     binary
+*.zip     binary
+*.pkl     binary
+*.pt      binary
+*.onnx    binary
+*.csv     binary
+*.ttf     binary
+*.woff    binary
+*.woff2   binary
