@@ -1,0 +1,15 @@
+{
+  "include": ["config.py", "check_env.py", "core", "env", "research", "tests", "models"],
+  "exclude": [".venv", "**/__pycache__", "_analysis"],
+  "stubPath": "typings",
+  "pythonVersion": "3.13",
+  "venvPath": ".",
+  "venv": ".venv",
+  "typeCheckingMode": "basic",
+  "extraPaths": [".", "core", "env", "research", "models", "models/genetics"],
+  "reportMissingImports": "warning",
+  "reportMissingTypeStubs": "none",
+  "reportArgumentType": "error",
+  "reportAttributeAccessIssue": "error",
+  "reportOperatorIssue": "error"
+}
