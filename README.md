@@ -111,14 +111,15 @@ AI-Trading/
 ├── research/
 │   ├── train_agent.py               ← 3-phase training script (3M steps, SubprocVecEnv)
 │   └── test_agent.py                ← Backtesting & evaluation script
-├── models/
-│   ├── model_eurusd_titany_v13_live.zip  ← Active live model (auto-updated by Shadow Trainer)
-│   └── vec_normalize.pkl                 ← Observation normalizer (must match model)
+├── models/                          ← binaries are git-ignored (see models/MODEL_CARD.md)
+│   ├── model_eurusd_titany_v12_sniper.zip  ← trained policy (RecurrentPPO)
+│   ├── vec_normalize.pkl                   ← observation normalizer (must match the model)
+│   └── best_models/ · checkpoints/         ← EvalCallback best + periodic checkpoints
 ├── brain_memory/                    ← Runtime state (git-ignored)
 │   ├── synaptic_memory.json         ← Synaptic weight & last trade timestamp
 │   ├── market_experience.csv        ← Live experience collected for Shadow Trainer
 │   └── lstm_memory_v12.pkl          ← LSTM hidden states (warm-up cache)
-├── tests/                           ← 67 pytest unit/integration tests
+├── tests/                           ← 66 pytest unit/integration tests
 │   ├── test_trading_env.py
 │   ├── test_indicators.py
 │   └── test_integration.py
@@ -194,9 +195,14 @@ Training auto-resumes from checkpoints. Phase detection based on `model.num_time
 
 | Phase | Steps | Focus |
 |---|---|---|
-| 1 | 0 – 500k | Basic entry/exit learning |
-| 2 | 500k – 1.5M | R:R discipline + filter internalization (teacher mode) |
-| 3 | 1.5M – 3M | Live-like conditions, HMM regime, full indicator stack |
+| 1 | 0 – 1.0M | Basic entry/exit learning |
+| 2 | 1.0M – 2.2M | R:R discipline + filter internalization (teacher mode) |
+| 3 | 2.2M – 3M | Live-like conditions, HMM regime, full indicator stack |
+
+> **Current model status:** the 3M-step baseline is documented in
+> [`models/MODEL_CARD.md`](models/MODEL_CARD.md). Out-of-sample it returns **-30.9%**
+> (22.4% win rate vs the 25% break-even of a 3:1 R:R), so it is **not approved for live
+> trading** — treat it as the reference run to improve on.
 
 > After training, copy `models/model_eurusd_titany_vXX.zip` and `models/vec_normalize.pkl` to the live machine.
 > ⚠️ `vec_normalize.pkl` **must** match the model — if you add features, both need regenerating.
