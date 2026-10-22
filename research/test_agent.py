@@ -6,7 +6,14 @@ Produces: equity curve, trade log CSV, summary stats, and a PNG report.
 Usage:
     python research/test_agent.py              # shows plots interactively
     python research/test_agent.py --headless   # saves to reports/, no GUI
+
+    # Backtest any model+normalizer pair (e.g. a diagnostic run)
+    python research/test_agent.py --headless \
+        --model models/diagnostics/teacher_off/model_diag_teacher_off.zip \
+        --normalize models/diagnostics/teacher_off/vec_normalize.pkl \
+        --tag teacher_off
 """
+import argparse
 import os
 import sys
 import warnings
@@ -173,7 +180,24 @@ def print_summary(equity_curve, closed_trades, initial_equity):
     }
 
 
-def main():
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Backtest out-of-sample de TITANY AI")
+    parser.add_argument("--model", default=os.path.join(
+        config.MODELS_DIR, "model_eurusd_titany_v12_sniper.zip"),
+        help="ruta al .zip del modelo")
+    parser.add_argument("--normalize", default=os.path.join(
+        config.MODELS_DIR, "vec_normalize.pkl"),
+        help="ruta al .pkl del VecNormalize")
+    parser.add_argument("--tag", default=None,
+        help="sufijo para los reportes (v12_trade_log_<tag>.csv, v12_backtest_report_<tag>.png)")
+    parser.add_argument("--headless", action="store_true",
+        help="no abrir ventana de matplotlib")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    suffix = ("_" + args.tag) if args.tag else ""
     # ── 1. Build feature pipeline ─────────────────────────────────────────────
     print("Loading and preprocessing data...")
     df, feature_cols = build_feature_pipeline(config.MASTER_CSV)
@@ -212,7 +236,7 @@ def main():
     vec_env = DummyVecEnv([make_env])
 
     # ── 4. Load normalizer ────────────────────────────────────────────────────
-    norm_path = os.path.join(config.MODELS_DIR, "vec_normalize.pkl")
+    norm_path = args.normalize
     if os.path.exists(norm_path):
         vec_env = VecNormalize.load(norm_path, vec_env)
         vec_env.training = False
@@ -222,7 +246,7 @@ def main():
         print("⚠️  vec_normalize.pkl not found — running without normalization.")
 
     # ── 5. Load model ─────────────────────────────────────────────────────────
-    model_path = os.path.join(config.MODELS_DIR, "model_eurusd_titany_v12_sniper.zip")
+    model_path = args.model
     if not os.path.exists(model_path):
         # Fall back to best_model from EvalCallback
         model_path = os.path.join(config.MODELS_DIR, "best_models", "best_model.zip")
@@ -244,9 +268,10 @@ def main():
     os.makedirs(os.path.join(_ROOT_DIR, "reports"), exist_ok=True)
     if closed_trades:
         trades_df = pd.DataFrame(closed_trades)
-        trade_csv = os.path.join(_ROOT_DIR, "reports", "v12_trade_log.csv")
+        trade_csv = os.path.join(_ROOT_DIR, "reports", f"v12_trade_log{suffix}.csv")
         trades_df.to_csv(trade_csv, index=False)
-        print(f"Trade log saved: reports/v12_trade_log.csv ({len(trades_df)} trades)")
+        print(f"Trade log saved: {os.path.relpath(trade_csv, _ROOT_DIR)} "
+              f"({len(trades_df)} trades)")
 
     # ── 9. Plot equity curve ──────────────────────────────────────────────────
     initial = config.TRAIN_INITIAL_EQUITY_USD
@@ -264,7 +289,10 @@ def main():
     ax.fill_between(range(len(equity_curve)), equity_curve,
                     initial, where=[e < initial for e in equity_curve],
                     alpha=0.15, color="#F44336")
-    ax.set_title("V12 Sniper — Equity Curve (Out-of-Sample)", fontsize=13, fontweight="bold")
+    title = "V12 Sniper — Equity Curve (Out-of-Sample)"
+    if args.tag:
+        title += f" [{args.tag}]"
+    ax.set_title(title, fontsize=13, fontweight="bold")
     ax.set_ylabel("Equity (USD)")
     ax.legend()
     ax.grid(True, alpha=0.3)
@@ -294,9 +322,9 @@ def main():
                  bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.4))
 
     plt.tight_layout(rect=(0, 0.04, 1, 1))
-    report_path = os.path.join(_ROOT_DIR, "reports", "v12_backtest_report.png")
+    report_path = os.path.join(_ROOT_DIR, "reports", f"v12_backtest_report{suffix}.png")
     plt.savefig(report_path, dpi=150)
-    print(f"Chart saved: reports/v12_backtest_report.png")
+    print(f"Chart saved: {os.path.relpath(report_path, _ROOT_DIR)}")
 
     if "--headless" not in sys.argv:
         plt.show()
