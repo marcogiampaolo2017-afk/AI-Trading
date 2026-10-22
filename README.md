@@ -218,6 +218,13 @@ python research/train_agent.py --headless --steps 500000 --fresh \
 
 # Reward decomposition: which term actually drives the policy?
 python research/reward_audit.py --bars 3000
+python research/reward_audit.py --bars 3000 --dd-penalty-scale 0 --tag dd0
+
+# Backtest a diagnostic run (writes *_<tag>.csv/png, leaves the reference reports intact)
+python research/test_agent.py --headless \
+    --model models/diagnostics/teacher_off/model_diag_teacher_off.zip \
+    --normalize models/diagnostics/teacher_off/vec_normalize.pkl \
+    --tag teacher_off
 ```
 
 `--out-dir` keeps model, normalizer, checkpoints and evaluation logs of a diagnostic run separate

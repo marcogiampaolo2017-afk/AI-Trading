@@ -112,6 +112,20 @@ Findings:
 4. `realized` is not raw pips either: `_close_position` doubles TP hits and multiplies losses by
    1.5, adding another shaping layer on top.
 
+Re-running the audit with the drawdown penalty disabled (`--dd-penalty-scale 0`) isolates the two
+effects:
+
+| dd_scale | teacher | policy | Trades | Equity | P&L terms | Shaping terms | Total |
+|---|---|---|---|---|---|---|---|
+| 1.0 | off | random | 79 | 137.22 | +1,825.6 | -3,751.5 | -1,925.9 |
+| 0.0 | off | random | 77 | 125.80 | +1,549.0 | **+6.8** | **+1,555.8** |
+| 0.0 | off | model  | 83 | 101.41 | +1,064.9 | -14.6 | +1,050.3 |
+| 0.0 | on  | random | 70 |  76.77 | +579.2 | -4,993.4 | -4,414.2 |
+| 0.0 | on  | model  | 53 |  76.97 | +279.6 | -3,187.6 | -2,908.0 |
+
+So the two fixes are independent and both required: disabling the drawdown penalty makes P&L the
+dominant term (+1.5k vs +7 shaping), while `teacher_mode` alone still injects -3k to -5k of shaping.
+
 Conclusion: the training objective is not P&L, and more steps cannot fix that. The audit tooling and
 the diagnostic flags (`--steps`, `--teacher-mode`, `--dd-penalty-scale`, `--seed`, `--out-dir`,
 `--fresh`) are in place to measure each fix in isolation.
