@@ -204,6 +204,10 @@ Training auto-resumes from checkpoints. Phase detection based on `model.num_time
 > [`models/MODEL_CARD.md`](models/MODEL_CARD.md). Out-of-sample it returns **-30.3%**
 > (18.5% win rate vs the 25% break-even of a 3:1 R:R), so it is **not approved for live
 > trading** — treat it as the reference run to improve on.
+>
+> A 500k-step diagnostic with `--teacher-mode off` (same code, seed 42) improves profit factor
+> from 0.82/0.68 to **1.24/0.97** on two disjoint 3,000-bar OOS windows: the teacher-mode shaping
+> was actively harmful. Still **not** approved for live trading (one window is break-even).
 
 ### Diagnostic runs
 
