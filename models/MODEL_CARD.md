@@ -70,6 +70,23 @@ Keep it as a **reproducible baseline** to compare future training runs against, 
 3. **Single seed** (open). None of the numbers above has a confidence interval.
 4. Progress chart title/filename hardcoded "600k" (fixed on this branch).
 
+## Recommended plan for the next run
+
+Nothing below is implemented yet; it is the shortlist to make the next run comparable and cheaper.
+
+1. **Align objective and metric.** Train with the same reward the backtest measures (`teacher_mode=False`),
+   or keep the shaping and evaluate with it too. Measure the delta before adding more compute.
+2. **Audit the reward terms.** Log the per-term contributions (spread/slippage cost, time penalty,
+   `unrealized_delta_weight`, teacher bonuses) for a fixed policy; if shaping dominates P&L the
+   agent is optimising the wrong thing.
+3. **More steps, cheap evals.** With bounded eval episodes (`episode_max_steps=2000`) the same machine
+   should fit 6-10M steps in ~15 h. Keep 6-7 workers.
+4. **Hyperparameter pass.** lr 1e-4 with cosine decay, `ent_coef=0.01`, `gamma=0.99`, `n_steps=2048`.
+5. **Risk sweep as separate runs.** `SL_TP_PAIRS` defines the action space: (20, 60) vs (20, 40) vs (50, 100)
+   are three different projects, not a hyperparameter. Do not mix them in one run.
+6. **Seeds.** At least 3 runs; report mean ± std of the OOS backtest, not a single number.
+7. **Walk-forward.** `train_agent.py` already defines 4 windows; report all folds instead of only window 2.
+
 ## Reproduce
 
 ```bash
