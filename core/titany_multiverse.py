@@ -72,7 +72,10 @@ class MultiverseUI(ctk.CTk):
         atr = df['atr'].iloc[-1]
         ma50 = df['Close'].rolling(50).mean()
         std50 = df['Close'].rolling(50).std()
-        z_score = (df['Close'].iloc[-1] - ma50.iloc[-1]) / (std50.iloc[-1] + 1e-8)
+        close_last = float(np.asarray(df['Close'])[-1])
+        ma_last = float(np.asarray(ma50)[-1])
+        std_last = float(np.asarray(std50)[-1])
+        z_score = (close_last - ma_last) / (std_last + 1e-8)
         closes = df['Close'].tail(PAST_CANDLES).values
         return closes, atr, z_score
     def multiverse_loop(self):

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import MetaTrader5 as mt5
 import pandas as pd
 import numpy as np
@@ -18,21 +20,45 @@ from env.indicators import add_volume_sniper_features
 from env.trading_env import ForexTradingEnv
 import config  # shared constants — MUST match training
 
+def _configure_console():
+    """Consola Windows (cp1252/cp850): sin esto, imprimir emojis lanza UnicodeEncodeError."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except ValueError:
+                pass
+
+
 SYMBOL = "EURUSD"
 TIMEFRAME = mt5.TIMEFRAME_H1
 # ── Credentials: read from environment variables; fall back to legacy constants
 # (set MT5_SERVER / MT5_ACCOUNT_ID / MT5_PASSWORD in your OS environment or a .env file)
-SERVER     = os.environ.get("MT5_SERVER",     "Ava-Real 1-MT5")
-_account_id_raw = os.environ.get("MT5_ACCOUNT_ID")
-_password_raw   = os.environ.get("MT5_PASSWORD")
-if not _account_id_raw or not _password_raw:
-    raise EnvironmentError(
-        "MT5 credentials not found. "
-        "Set MT5_ACCOUNT_ID and MT5_PASSWORD as environment variables "
-        "before running live_trading_system.py."
-    )
-ACCOUNT_ID = int(_account_id_raw)
-PASSWORD   = _password_raw
+SERVER = os.environ.get("MT5_SERVER", "Ava-Real 1-MT5")
+
+
+def load_credentials():
+    """Lee las credenciales de MT5 en tiempo de ejecución, no al importar.
+
+    Importar este módulo no debe fallar: las credenciales solo son necesarias
+    para conectar con el terminal. Así se puede importar desde tests, desde
+    Pylance/VS Code o desde un notebook sin tener el entorno configurado.
+    """
+    account_id = os.environ.get("MT5_ACCOUNT_ID")
+    password = os.environ.get("MT5_PASSWORD")
+    if not account_id or not password:
+        raise EnvironmentError(
+            "MT5 credentials not found. "
+            "Set MT5_ACCOUNT_ID and MT5_PASSWORD as environment variables "
+            "before running live_trading_system.py."
+        )
+    return int(account_id), password
+
+
+# Compatibilidad: quedan en None hasta que main() llame a load_credentials().
+ACCOUNT_ID = None
+PASSWORD = None
 # SHOWSTOPPER FIX: use the SAME SL/TP/WIN as training (from config).
 # A mismatch here creates a different action-space size → wrong predictions.
 SL_OPTS  = config.SL_OPTIONS   # [20, 50, 100]
@@ -63,6 +89,9 @@ class LiveTradingAgent:
     2. Configurar el sistema de normalización (.pkl) para que las escalas coincidan.
     3. Seleccionar los indicadores correctos (V5, V7 o V10) automáticamente.
     """
+    model: RecurrentPPO | None
+    v_env: DummyVecEnv | VecNormalize | None
+
     def __init__(self, primary_model_path, normalize_path):
         self.model = None
         self.v_env = None
@@ -71,12 +100,15 @@ class LiveTradingAgent:
         print(f"🔍 Analizando arquitectura de {primary_model_path}...")
         try:
             temp_model = RecurrentPPO.load(primary_model_path)
-            self.required_features = temp_model.observation_space.shape[-1]
+            obs_shape = getattr(temp_model.observation_space, "shape", None)
+            self.required_features = int(obs_shape[-1]) if obs_shape else 30
             print(f"🧩 Arquitectura detectada: {self.required_features} neuronas.")
         except Exception as e:
             print(f"⚠️ Error al analizar {primary_model_path}: {e}")
             self.required_features = 20                    
         self.setup_environment(normalize_path)
+        if self.v_env is None:
+            raise RuntimeError("El entorno de normalización no se inicializó.")
         try:
             self.model = RecurrentPPO.load(primary_model_path, env=self.v_env)
             print("💎 Cerebro del bot cargado y listo.")
@@ -122,7 +154,7 @@ class LiveTradingAgent:
             # Build a properly-named dummy DataFrame so ForexTradingEnv validates correctly
             dummy_df = pd.DataFrame(
                 np.zeros((100, len(self.feature_cols))),
-                columns=self.feature_cols
+                columns=pd.Index(self.feature_cols)
             )
             return ForexTradingEnv(
                 dummy_df,
@@ -131,20 +163,29 @@ class LiveTradingAgent:
                 tp_options=TP_OPTS,
                 feature_columns=self.feature_cols,
             )
-        self.v_env = DummyVecEnv([make_dummy])
+        v_env: DummyVecEnv | VecNormalize = DummyVecEnv([make_dummy])
         if os.path.exists(normalize_path):
             try:
-                self.v_env = VecNormalize.load(normalize_path, self.v_env)
-                self.v_env.training = False
-                self.v_env.norm_reward = False
+                v_env = VecNormalize.load(normalize_path, v_env)
+                v_env.training = False
+                v_env.norm_reward = False
                 print(f"🧠 Escalas de normalización aplicadas ({normalize_path}).")
             except Exception as e:
                 print(f"⚠️ El normalizador no coincide con esta arquitectura: {e}")
                 print("Probando carga sin normalización (Peligro: Escalas inconsistentes)")
-    def _build_action_map(self):
-        """Build action map from explicit (sl,tp) pairs — must match training."""
-        actions = [("HOLD", 0, 0, 0), ("CLOSE", 0, 0, 0)]
-        for d in [0, 1]:
+        self.v_env = v_env
+    def _build_action_map(self) -> list[tuple[str, int, float, float]]:
+        """Build action map from explicit (sl,tp) pairs — must match training.
+
+        ALLOW_MANUAL_CLOSE=False elimina la accion CLOSE, igual que en el
+        entorno de entrenamiento. Si aqui se agregara siempre, todos los
+        indices se desplazarian: la senal SHORT caeria en CLOSE y la LONG
+        se ejecutaria como SHORT (el bug documentado del action space).
+        """
+        actions: list[tuple[str, int, float, float]] = [("HOLD", 0, 0.0, 0.0)]
+        if config.ALLOW_MANUAL_CLOSE:
+            actions.append(("CLOSE", 0, 0.0, 0.0))
+        for d in (0, 1):
             for sl, tp in config.SL_TP_PAIRS:   # same pairs as training
                 actions.append(("OPEN", d, float(sl), float(tp)))
         return actions
@@ -170,7 +211,7 @@ class LiveTradingAgent:
         state_v = np.tile(np.array([pos_val, 0.0, 0.0]), (WIN_SIZE, 1))
         obs = np.hstack([obs_b, state_v]).astype(np.float32)
         obs_ready = obs[np.newaxis, ...]                  
-        if hasattr(self.v_env, 'normalize_obs'):
+        if isinstance(self.v_env, VecNormalize):
             return self.v_env.normalize_obs(obs_ready)
         return obs_ready
 def execute_trade(action_tuple):
@@ -235,8 +276,14 @@ def main():
     2. Busca el mejor modelo disponible en tu carpeta.
     3. Inicia un ciclo infinito que analiza el mercado cada 10 segundos.
     """
+    _configure_console()
     print("--- TITANY RL LIVE MASTER GUIDE ---")
-    if not connect_to_mt5(ACCOUNT_ID, PASSWORD, SERVER):
+    try:
+        account_id, password = load_credentials()
+    except EnvironmentError as exc:
+        print(f"❌ {exc}")
+        sys.exit(1)
+    if not connect_to_mt5(account_id, password, SERVER):
         return
     # SHOWSTOPPER FIX: include the V12 Sniper model that train_agent.py saves.
     # Paths are relative to the project root (parent of /core/).
@@ -275,9 +322,14 @@ def main():
             df = pd.DataFrame(rates)
             df.rename(columns={'time': 'Gmt time', 'open': 'Open', 'high': 'High', 
                               'low': 'Low', 'close': 'Close', 'tick_volume': 'Volume'}, inplace=True)
-            n_pos = len(mt5.positions_get(symbol=SYMBOL))
+            positions = mt5.positions_get(symbol=SYMBOL)
+            n_pos = 0 if positions is None else len(positions)
             obs = agent.prepare_observation(df, n_pos)
-            action, _ = agent.model.predict(obs, deterministic=True)
+            model = agent.model
+            if model is None:
+                print("❌ Modelo no disponible; deteniendo el bucle.")
+                return
+            action, _ = model.predict(obs, deterministic=True)
             action_info = agent.action_map[int(action.item())]
             execute_trade(action_info)
             time.sleep(10)
