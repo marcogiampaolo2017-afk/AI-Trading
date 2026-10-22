@@ -26,6 +26,7 @@ models/*.zip
 models/*.pkl
 models/best_models/
 models/checkpoints/
+models/diagnostics/
 tensorboard_logs/
 tensorboard_log/
 logs/
