@@ -133,6 +133,12 @@ def main():
             initial_equity_usd=config.TRAIN_INITIAL_EQUITY_USD,
             max_drawdown_fraction=config.MAX_DRAWDOWN_FRACTION,
             allow_manual_close=config.ALLOW_MANUAL_CLOSE,
+            # Fixed-length eval episodes: without a cap an eval episode runs
+            # until the drawdown breaker trips (up to ~20k steps), which makes
+            # each eval slow AND makes EvalCallback compare total rewards of
+            # episodes with different durations -> the "best model" becomes
+            # noise. 2000 steps = ~2 LSTM windows of coherent signal.
+            episode_max_steps=2000,
         )
         return Monitor(env)
     test_eval_env = SubprocVecEnv([make_test_eval_env])
@@ -144,6 +150,9 @@ def main():
         best_model_save_path=os.path.join(root_dir, 'models', 'best_models'),
         log_path=os.path.join(root_dir, 'logs'), 
         eval_freq=10000,
+        # 3 bounded episodes instead of 1: EvalCallback saves best_model only
+        # when the mean improves, so a single noisy episode is not enough.
+        n_eval_episodes=3,
         deterministic=True, 
         render=False
     )
@@ -337,9 +346,13 @@ def main():
                              mean_rewards + std_rewards,
                              alpha=0.2, color='#1f77b4', label='±1 Desv. Std.')
             plt.axhline(y=0, color='red', linestyle='--', label='Referencia 0')
-            plt.axvline(x=150000, color='orange', linestyle=':', label='Fin Fase 1 (150k)')
-            plt.axvline(x=450000, color='green',  linestyle=':', label='Fin Fase 2 (450k)')
-            plt.title("TITANY AI — Progreso de Entrenamiento (600k pasos)")
+            if timesteps[-1] > _P1:
+                plt.axvline(x=_P1, color='orange', linestyle=':',
+                            label=f'Fin Fase 1 ({_P1:,})')
+            if timesteps[-1] > _P2:
+                plt.axvline(x=_P2, color='green', linestyle=':',
+                            label=f'Fin Fase 2 ({_P2:,})')
+            plt.title(f"TITANY AI — Progreso de Entrenamiento ({int(timesteps[-1]):,} pasos)")
             plt.xlabel("Pasos de Entrenamiento")
             plt.ylabel("Recompensa Media")
             plt.legend()
@@ -357,9 +370,9 @@ def main():
             plt.grid(True, alpha=0.3)
             reports_dir = os.path.join(root_dir, "reports")
             os.makedirs(reports_dir, exist_ok=True)
-            report_img_path = os.path.join(reports_dir, "reporte_600k_pasos_pro_max.png")
+            report_img_path = os.path.join(reports_dir, "reporte_entrenamiento_pro_max.png")
             plt.savefig(report_img_path, dpi=150)
-            print(f"✅ Gráfico guardado en 'reports/reporte_600k_pasos_pro_max.png'")
+            print("✅ Gráfico guardado en 'reports/reporte_entrenamiento_pro_max.png'")
             df_curves = pd.DataFrame({
                 'Timestep': timesteps,
                 'Mean_Reward': mean_rewards,
@@ -399,7 +412,7 @@ def main():
         plt.legend()
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
-        fallback_img = os.path.join(root_dir, "reports", "reporte_600k_pasos_pro_max.png")
+        fallback_img = os.path.join(root_dir, "reports", "reporte_entrenamiento_pro_max.png")
         os.makedirs(os.path.join(root_dir, "reports"), exist_ok=True)
         plt.savefig(fallback_img, dpi=150)
         print(f"✅ Gráfico fallback guardado ({len(test_res)} velas)")
