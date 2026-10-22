@@ -5,14 +5,26 @@ indicators.py — Motor de Features para TITANY AI
 Calcula los 26 indicadores técnicos + cuánticos que alimentan la red neuronal.
 Protección robusta contra NaN, Inf y division-by-zero.
 """
+from typing import Any
+
 import numpy as np
 import pandas as pd
+
+# pandas-ta / pandas-ta-classic: import dinámico con fallback.
+# Se tipa como Any a propósito: son módulos opcionales y el analizador estático
+# no debe marcar "rsi/macd/atr no existen en None".
+ta: Any
 try:
-    import pandas_ta as ta
+    import pandas_ta as ta  # type: ignore[import-not-found]
     _HAS_TA = True
-except ImportError:          # CI Ubuntu sin pandas-ta — solo afecta funciones que lo usan
-    ta = None
-    _HAS_TA = False
+except ImportError:
+    try:
+        # Fork mantenido y compatible con numpy 2 (Requirements.txt: pandas-ta-classic)
+        import pandas_ta_classic as ta  # type: ignore[import-not-found]
+        _HAS_TA = True
+    except ImportError:      # CI Ubuntu sin pandas-ta — solo afecta funciones que lo usan
+        ta = None
+        _HAS_TA = False
 
 
 # ---------------------------------------------------------------------------
