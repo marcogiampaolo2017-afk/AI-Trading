@@ -130,6 +130,42 @@ Conclusion: the training objective is not P&L, and more steps cannot fix that. T
 the diagnostic flags (`--steps`, `--teacher-mode`, `--dd-penalty-scale`, `--seed`, `--out-dir`,
 `--fresh`) are in place to measure each fix in isolation.
 
+## Diagnostic runs (500k steps)
+
+With the reward audit in hand, two short runs isolate each fix. Same data split, seed 42, bounded
+evaluation episodes, 6 workers, isolated output dirs under `models/diagnostics/`.
+
+| Run | teacher | dd_scale | Steps | Output | Status |
+|---|---|---|---|---|---|
+| A | off | 1.0 | 516,096 | `models/diagnostics/teacher_off/` | done |
+| B | off | 0.0 | 500,000 | `models/diagnostics/teacher_off_dd0/` | in progress |
+
+### Run A — teacher shaping removed (the 500k diagnostic)
+
+Training took 2 h 07 min (15:13 → 17:20), 8 evaluations. Evaluation mean reward (3 bounded episodes
+each): -922, -1,193, -3,431, -1,822, +157, -2,706, -478, **+1,537** — noisy, but the trend is upward
+and it ends positive, something the 3M reference run never did.
+
+Out-of-sample comparison on two disjoint 3,000-bar windows of the test set (teacher mode off for
+evaluation, same env, same costs):
+
+| Model | Window | Bars run | Return | Max DD | Trades | Win rate | PF |
+|---|---|---|---|---|---|---|---|
+| 3M baseline | 1 | 2,172 | **-30.03%** | 43.04% | 56 | 19.6% | 0.82 |
+| 3M baseline | 2 | 1,160 | **-31.83%** | 47.49% | 44 | 18.2% | 0.68 |
+| A — 500k, teacher off | 1 | 2,999 | **+42.52%** | 32.65% | 70 | 27.1% | **1.24** |
+| A — 500k, teacher off | 2 | 2,999 | **-4.03%** | 24.86% | 73 | 26.0% | 0.97 |
+
+Reading: the teacher-off model is robustly better (PF 1.24 and 0.97 vs 0.82 and 0.68), survives both
+windows without hitting the drawdown breaker, and clears the 25% break-even win rate in both. It is
+**not** a profitable strategy yet: window 2 is essentially break-even.
+
+Caveats: 3,000-bar windows (~4 months of H1 each), one seed, and the full 19,886-bar backtest is
+pending (the host CPU is shared with a game, which starves the LSTM backtest).
+
+Conclusion so far: **the teacher-mode shaping was actively harmful**, and removing it is worth more
+than 5x the training budget of the reference run. Run B tests whether disabling the drawdown penalty
+adds anything on top.
 ## Recommended plan for the next run
 
 Nothing below is implemented yet; it is the shortlist to make the next run comparable and cheaper.

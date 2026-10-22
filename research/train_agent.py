@@ -423,7 +423,7 @@ def main(argv=None):
             os.makedirs(reports_dir, exist_ok=True)
             report_img_path = os.path.join(reports_dir, "reporte_entrenamiento_pro_max.png")
             plt.savefig(report_img_path, dpi=150)
-            print("✅ Gráfico guardado en 'reports/reporte_entrenamiento_pro_max.png'")
+            print(f"✅ Gráfico guardado en '{os.path.relpath(report_img_path, root_dir)}'")
             df_curves = pd.DataFrame({
                 'Timestep': timesteps,
                 'Mean_Reward': mean_rewards,
@@ -433,7 +433,7 @@ def main(argv=None):
                 df_curves['Mean_Episode_Length'] = ep_lengths.mean(axis=1)
             report_csv_path = os.path.join(reports_dir, "reporte_equity_data.csv")
             df_curves.to_csv(report_csv_path, index=False)
-            print(f"✅ Datos guardados en 'reports/reporte_equity_data.csv'")
+            print(f"✅ Datos guardados en '{os.path.relpath(report_csv_path, root_dir)}'")
             graph_generated = True          # ← mark success so fallback is skipped
         except Exception as e:
             print(f"⚠️  Error leyendo logs: {e}. Usando método alternativo...")
