@@ -29,7 +29,7 @@ def run_backtest():
     test_df = df.tail(5000).copy()
     print(f"📊 Verificando integridad de features (Primeras 5 filas):")
     print(test_df[final_cols].head())
-    if test_df[final_cols].isnull().values.any():
+    if test_df[final_cols].isna().to_numpy().any():
         print("⚠️ ALERTA: Hay valores NaN en las features. Eso puede romper el modelo.")
         test_df = test_df.fillna(0)
     def make_env():
@@ -45,7 +45,7 @@ def run_backtest():
     actions_taken = []
     print(f"📈 Procesando {len(test_df)} velas de historial...")
     for i in range(len(test_df) - WIN_SIZE - 1):
-        action, _ = model.predict(obs, deterministic=True)
+        action, _ = model.predict(np.asarray(obs, dtype=np.float32), deterministic=True)
         obs, reward, done, info = venv.step(action)
         equity_curve.append(info[0]['equity_usd'])
         actions_taken.append(action[0])
@@ -64,7 +64,7 @@ def run_backtest():
     plt.legend()
     plt.savefig("validacion_v10_resultado.png")
     print("✅ Gráfico guardado como 'validacion_v10_resultado.png'")
-    pd.DataFrame(equity_curve, columns=["equity"]).to_csv("backtest_v10_data.csv", index=False)
+    pd.DataFrame(equity_curve, columns=pd.Index(["equity"])).to_csv("backtest_v10_data.csv", index=False)
     print("✅ Datos guardados en 'backtest_v10_data.csv'")
 if __name__ == "__main__":
     run_backtest()

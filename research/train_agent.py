@@ -25,7 +25,8 @@ from env.indicators import (
 )
 from env.trading_env import ForexTradingEnv
 def main():
-    N_CORES = min(6, max(1, os.cpu_count() - 1)) 
+    # os.cpu_count() puede devolver None según la plataforma -> fallback seguro
+    N_CORES = min(6, max(1, (os.cpu_count() or 1) - 1)) 
     th.set_num_threads(1)                                            
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     flag_path = os.path.join(root_dir, "stop_training.flag")
@@ -48,8 +49,8 @@ def main():
     feature_cols.extend(golden_cols)
     df, sniper_cols = add_volume_sniper_features(df)
     feature_cols.extend(sniper_cols)
-    corr_matrix = df[feature_cols].corr().abs()
-    upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+    corr_matrix = df.loc[:, feature_cols].corr().abs()
+    upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool), other=np.nan)
     # FIX: pin features that must ALWAYS be present for train/live consistency
     _PROTECTED_FEATURES = {"regime_proxy"}
     to_drop = [

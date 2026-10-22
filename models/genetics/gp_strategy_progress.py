@@ -9,7 +9,7 @@ import operator
 import random
 import time
 from pathlib import Path
-from typing import Dict, Tuple, List
+from typing import Any, Dict, Tuple, List
 import dill                              
 import numpy as np
 import pandas as pd
@@ -69,7 +69,7 @@ def load_pair_csv(symbol: str, path: Path, freq: str = "5min") -> pd.DataFrame:
             col_map[col] = "Low"
         elif low.startswith("close"):
             col_map[col] = "Close"
-    df = df[list(col_map.keys())].rename(columns=col_map)
+    df = df.loc[:, list(col_map.keys())].rename(columns=col_map)
     print(f"🔍 {symbol} columns after filtering: {sorted(df.columns)}")
     df = df.resample(freq, label="right", closed="right").agg({
         "Open": "first",
@@ -79,7 +79,7 @@ def load_pair_csv(symbol: str, path: Path, freq: str = "5min") -> pd.DataFrame:
     }).ffill()
     df.columns = [f"{symbol}_{c}" for c in df.columns]
     print(f"{symbol}: {len(df)} bars loaded and resampled with columns: {sorted(df.columns)}")
-    return df
+    return pd.DataFrame(df)
 def load_all_pairs(data_dir: Path, pairs: List[str] = PAIRS) -> pd.DataFrame:
     """Load every CSV into a *wide* DataFrame indexed by timestamp."""
     print(f" Loading {len(pairs)} currency pairs from {data_dir}...")
@@ -112,7 +112,7 @@ def pct_to_units(percent: float, equity: float, price: float) -> float:
     return percent / 100.0 * equity / price
 class GPExposureStrategy(Strategy):
     commission, slippage = COMMISSION_PCT, 0.0
-    expression = None                     
+    expression: Any = None  # inyectada en runtime por toolbox.compile()                     
     def init(self):
         broker = self._broker
         equity_start = getattr(broker, "equity", getattr(broker, "_equity"))
@@ -274,7 +274,7 @@ def custom_ea_simple(population, toolbox, cxpb, mutpb, ngen, stats=None,
         remaining = estimated_total - total_time
         print(f"⏱  Progress: {progress:.1f}% | ETA: {remaining:.1f}s")
     return population
-def run_evolution(train_df: pd.DataFrame, n_gen=N_GEN, pop_size=POP_SIZE) -> List[creator.Individual]:
+def run_evolution(train_df: pd.DataFrame, n_gen=N_GEN, pop_size=POP_SIZE) -> Any:
     """Evolve and return the hall‑of‑fame individuals (top 10)."""
     toolbox.register("evaluate", evaluate_individual, df_train=train_df)
     print(f" Creating initial population of {pop_size:,} individuals...")
@@ -290,7 +290,7 @@ def run_evolution(train_df: pd.DataFrame, n_gen=N_GEN, pop_size=POP_SIZE) -> Lis
                      stats=mstats, halloffame=hof, verbose=True)
     print(f"\n Evolution complete! Hall of Fame contains {len(hof)} individuals")
     return hof
-def backtest_on_slice(individual, df_slice: pd.DataFrame, label: str) -> Dict[str, float]:
+def backtest_on_slice(individual, df_slice: pd.DataFrame, label: str) -> Any:
     """Run the strategy encoded by *individual* on *df_slice* and return stats."""
     print(f"\n📊 Running backtest on {label} dataset...")
     func = toolbox.compile(expr=individual)
