@@ -110,7 +110,8 @@ AI-Trading/
 │   └── indicators.py                ← 26+ features: FER, VAM, Z-Score, VSA, ICT, HMM…
 ├── research/
 │   ├── train_agent.py               ← 3-phase training script (3M steps, SubprocVecEnv)
-│   └── test_agent.py                ← Backtesting & evaluation script
+│   ├── test_agent.py                ← Backtesting & evaluation script
+│   └── reward_audit.py              ← Per-term reward decomposition (teacher/dd/P&L)
 ├── models/                          ← binaries are git-ignored (see models/MODEL_CARD.md)
 │   ├── model_eurusd_titany_v12_sniper.zip  ← trained policy (RecurrentPPO)
 │   ├── vec_normalize.pkl                   ← observation normalizer (must match the model)
@@ -203,6 +204,25 @@ Training auto-resumes from checkpoints. Phase detection based on `model.num_time
 > [`models/MODEL_CARD.md`](models/MODEL_CARD.md). Out-of-sample it returns **-30.3%**
 > (18.5% win rate vs the 25% break-even of a 3:1 R:R), so it is **not approved for live
 > trading** — treat it as the reference run to improve on.
+
+### Diagnostic runs
+
+The 3-phase schedule is the reference run; shorter isolated experiments are supported so a
+reward/feature change can be measured without spending 15 h:
+
+```bash
+# 500k steps without the filter-shaping reward (teacher_mode=off)
+python research/train_agent.py --headless --steps 500000 --fresh \
+    --teacher-mode off --seed 42 \
+    --model-name model_diag_teacher_off --out-dir models/diagnostics/teacher_off
+
+# Reward decomposition: which term actually drives the policy?
+python research/reward_audit.py --bars 3000
+```
+
+`--out-dir` keeps model, normalizer, checkpoints and evaluation logs of a diagnostic run separate
+from the reference artifacts. `--dd-penalty-scale 0` disables the per-step drawdown penalty that
+the reward audit found dominating the reward.
 
 > After training, copy `models/model_eurusd_titany_vXX.zip` and `models/vec_normalize.pkl` to the live machine.
 > ⚠️ `vec_normalize.pkl` **must** match the model — if you add features, both need regenerating.

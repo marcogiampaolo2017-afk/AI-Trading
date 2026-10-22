@@ -1,3 +1,4 @@
+import argparse
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -24,7 +25,35 @@ from env.indicators import (
     add_volume_sniper_features,
 )
 from env.trading_env import ForexTradingEnv
-def main():
+
+
+def parse_args(argv=None):
+    """CLI para diagnosticar runs cortos sin tocar el run de referencia de 3M."""
+    parser = argparse.ArgumentParser(description="Entrenamiento RecurrentPPO TITANY AI")
+    parser.add_argument("--headless", action="store_true",
+                        help="sin ventanas de matplotlib")
+    parser.add_argument("--steps", type=int, default=3_000_000,
+                        help="total de pasos a entrenar (default: 3M)")
+    parser.add_argument("--teacher-mode", choices=["on", "off"], default="on",
+                        help="shaping de filtros en el reward del entorno")
+    parser.add_argument("--dd-penalty-scale", type=float, default=1.0,
+                        help="escala del castigo por drawdown por paso (0.0 lo desactiva)")
+    parser.add_argument("--model-name", default="model_eurusd_titany_v12_sniper",
+                        help="nombre base del .zip de salida")
+    parser.add_argument("--out-dir", default=None,
+                        help="carpeta de salida (modelo, normalizador, checkpoints, logs). "
+                             "Default: models/ y logs/ del repo")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="semilla para comparar corridas")
+    parser.add_argument("--fresh", action="store_true",
+                        help="ignorar modelo/normalizador existentes en out-dir")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    total_steps = max(2048, int(args.steps))
+    teacher = args.teacher_mode == "on"
     # os.cpu_count() puede devolver None según la plataforma -> fallback seguro
     N_CORES = min(6, max(1, (os.cpu_count() or 1) - 1)) 
     th.set_num_threads(1)                                            
@@ -32,6 +61,18 @@ def main():
     flag_path = os.path.join(root_dir, "stop_training.flag")
     if os.path.exists(flag_path):
         os.remove(flag_path) # Limpiar bandera vieja antes de empezar
+
+    # Salidas: el run de referencia usa models/ + logs/; los diagnósticos usan
+    # --out-dir para no pisar el modelo bueno ni mezclar curvas de evaluación.
+    out_dir = os.path.abspath(args.out_dir) if args.out_dir else os.path.join(root_dir, "models")
+    best_dir = os.path.join(out_dir, "best_models")
+    ckpt_dir = os.path.join(out_dir, "checkpoints")
+    run_logs = os.path.join(out_dir, "logs") if args.out_dir else os.path.join(root_dir, "logs")
+    for _d in (out_dir, best_dir, ckpt_dir, run_logs):
+        os.makedirs(_d, exist_ok=True)
+    print(f"[RUN] steps={total_steps:,} | teacher={args.teacher_mode} | "
+          f"seed={args.seed} | model={args.model_name}")
+    print(f"[RUN] salida: {out_dir}")
 
     print(f"[MODO ESTABLE] Iniciando entrenamiento: Usando {N_CORES} núcleos.")
     print(f"[REGLA] Solo abre si Multiverso y Genetica dan LUZ VERDE.")
@@ -93,6 +134,7 @@ def main():
             initial_equity_usd=config.TRAIN_INITIAL_EQUITY_USD,
             # Safety: cut episode if equity falls >30% (mirrors live risk limit)
             max_drawdown_fraction=config.MAX_DRAWDOWN_FRACTION,
+            drawdown_penalty_scale=args.dd_penalty_scale,
             # No manual close: model only opens/holds, SL/TP handle all exits.
             # Prevents "cut winners short, let losers run" (TP hit only 1%).
             allow_manual_close=config.ALLOW_MANUAL_CLOSE,
@@ -102,11 +144,14 @@ def main():
         return Monitor(env)                                                
     train_vec_env = SubprocVecEnv([make_train_env] * N_CORES)
     # Resume priority: saved final model → EvalCallback best model.
-    _saved_model     = os.path.join(root_dir, 'models', 'model_eurusd_titany_v12_sniper.zip')
-    _eval_best_model = os.path.join(root_dir, 'models', 'best_models', 'best_model.zip')
-    best_model_path  = _saved_model if os.path.exists(_saved_model) else _eval_best_model
-    norm_save_path = os.path.join(root_dir, "models", "vec_normalize.pkl")
-    if os.path.exists(norm_save_path):
+    _saved_model     = os.path.join(out_dir, args.model_name + ".zip")
+    _eval_best_model = os.path.join(best_dir, "best_model.zip")
+    if args.fresh:
+        best_model_path = None
+    else:
+        best_model_path = _saved_model if os.path.exists(_saved_model) else _eval_best_model
+    norm_save_path = os.path.join(out_dir, "vec_normalize.pkl")
+    if os.path.exists(norm_save_path) and not args.fresh:
         try:
             _loaded_norm = VecNormalize.load(norm_save_path, train_vec_env)
             train_vec_env = _loaded_norm
@@ -128,11 +173,12 @@ def main():
             sl_options=config.SL_OPTIONS,
             tp_options=config.TP_OPTIONS,
             feature_columns=feature_cols,
-            random_start=False, teacher_mode=True,
+            random_start=False, teacher_mode=teacher,
             lot_size=config.TRAIN_LOT_UNITS,
             initial_equity_usd=config.TRAIN_INITIAL_EQUITY_USD,
             max_drawdown_fraction=config.MAX_DRAWDOWN_FRACTION,
             allow_manual_close=config.ALLOW_MANUAL_CLOSE,
+            drawdown_penalty_scale=args.dd_penalty_scale,
             # Fixed-length eval episodes: without a cap an eval episode runs
             # until the drawdown breaker trips (up to ~20k steps), which makes
             # each eval slow AND makes EvalCallback compare total rewards of
@@ -147,8 +193,8 @@ def main():
         test_eval_env.obs_rms = train_vec_env.obs_rms
     eval_callback = EvalCallback(
         test_eval_env, 
-        best_model_save_path=os.path.join(root_dir, 'models', 'best_models'),
-        log_path=os.path.join(root_dir, 'logs'), 
+        best_model_save_path=best_dir,
+        log_path=run_logs, 
         eval_freq=10000,
         # 3 bounded episodes instead of 1: EvalCallback saves best_model only
         # when the mean improves, so a single noisy episode is not enough.
@@ -158,16 +204,16 @@ def main():
     )
     
     class StopTrainingCallback(BaseCallback):
-        def __init__(self, flag_path, verbose=0):
+        def __init__(self, flag_path, save_path, verbose=0):
             super().__init__(verbose)
             self.flag_path = flag_path
+            self.save_path = save_path
         def _on_step(self):
             if os.path.exists(self.flag_path):
                 print("\n[INFO] Señal de detención AFK detectada. Guardando progreso de emergencia...", flush=True)
                 try:
                     # Hacemos el guardado forzado DENTRO del callback
-                    emergency_path = os.path.join(os.path.dirname(self.flag_path), "models", "model_eurusd_titany_v12_sniper.zip")
-                    self.model.save(emergency_path)
+                    self.model.save(self.save_path)
                     print("✅ [EMERGENCIA] Modelo Neural guardado correctamente.", flush=True)
                 except Exception as e:
                     print(f"❌ Error al guardar en emergencia: {e}", flush=True)
@@ -182,19 +228,19 @@ def main():
                 
             return True
             
-    stop_callback = StopTrainingCallback(flag_path)
+    stop_callback = StopTrainingCallback(flag_path, os.path.join(out_dir, args.model_name))
     # FIX: persist progress regularly so a Ctrl+C / crash never loses everything.
     # save_freq is per-env-step, so divide the target wall interval by N_CORES.
     checkpoint_callback = CheckpointCallback(
         save_freq=max(250000 // N_CORES, 1),
-        save_path=os.path.join(root_dir, "models", "checkpoints"),
+        save_path=ckpt_dir,
         name_prefix="titany_ckpt",
         save_vecnormalize=True,
     )
     callbacks = [eval_callback, stop_callback, checkpoint_callback]
     # ── Try to resume from a previous checkpoint ──────────────────────────────
     model = None
-    if os.path.exists(best_model_path):
+    if best_model_path is not None and os.path.exists(best_model_path):
         try:
             model = RecurrentPPO.load(
                 best_model_path,
@@ -246,12 +292,13 @@ def main():
             # FIX: tighter trust region + gradient clipping for stability
             clip_range=0.15,
             max_grad_norm=0.5,
-            policy_kwargs=policy_kwargs
+            policy_kwargs=policy_kwargs,
+            seed=args.seed,
         )
     print("[INFO] Configurando Entorno Quantico...")
-    model_name      = "model_eurusd_titany_v12_sniper"
-    model_save_path = os.path.join(root_dir, "models", model_name)
-    norm_save_path  = os.path.join(root_dir, "models", "vec_normalize.pkl")
+    model_name      = args.model_name
+    model_save_path = os.path.join(out_dir, model_name)
+    norm_save_path  = os.path.join(out_dir, "vec_normalize.pkl")
 
     def _save_progress(tag=""):
         """Persist model + normalizer — only if current steps > already saved steps.
@@ -288,9 +335,11 @@ def main():
     # When a checkpoint is loaded, model.num_timesteps reflects how far training
     # progressed. We use this to jump directly to the correct phase so a restart
     # never re-runs phases that are already done.
-    _P1 = 1_000_000          # end of phase 1
-    _P2 = 2_200_000          # end of phase 2  (1M + 1.2M)
-    _P3 = 3_000_000          # end of phase 3  (1M + 1.2M + 800k)
+    # Mismas proporciones que el run de referencia de 3M (1M / 2.2M / 3M),
+    # pero escaladas a --steps para que los diagnósticos cortos sean comparables.
+    _P1 = max(1, total_steps // 3)
+    _P2 = max(_P1 + 1, int(total_steps * 22 / 30))
+    _P3 = total_steps
     _done = getattr(model, "num_timesteps", 0)
     print(f"[MEMORIA] Pasos ya completados: {_done:,} / {_P3:,}", flush=True)
 
@@ -321,14 +370,15 @@ def main():
         return
 
     _save_progress()
-    print(f"🧬 ¡V12 SNIPER COMPLETADO! Modelo guardado en 'models/{model_name}'.", flush=True)
+    print(f"🧬 ¡ENTRENAMIENTO COMPLETADO! Modelo guardado en "
+          f"'{os.path.relpath(model_save_path, root_dir)}'.", flush=True)
     print(f"📊 Estrategia EMA200+MACD integrada en el núcleo neuronal.", flush=True)
     
     if os.path.exists(flag_path):
         os.remove(flag_path)
         
     print("Generando gráfico de progreso del entrenamiento completo...", flush=True)
-    eval_log_path = os.path.join(root_dir, "logs", "evaluations.npz")
+    eval_log_path = os.path.join(run_logs, "evaluations.npz")
     graph_generated = False
     if os.path.exists(eval_log_path):
         try:
@@ -368,7 +418,8 @@ def main():
             plt.xlabel("Pasos de Entrenamiento")
             plt.legend()
             plt.grid(True, alpha=0.3)
-            reports_dir = os.path.join(root_dir, "reports")
+            reports_dir = (os.path.join(out_dir, "reports") if args.out_dir
+                           else os.path.join(root_dir, "reports"))
             os.makedirs(reports_dir, exist_ok=True)
             report_img_path = os.path.join(reports_dir, "reporte_entrenamiento_pro_max.png")
             plt.savefig(report_img_path, dpi=150)
@@ -412,12 +463,13 @@ def main():
         plt.legend()
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
-        fallback_img = os.path.join(root_dir, "reports", "reporte_entrenamiento_pro_max.png")
-        os.makedirs(os.path.join(root_dir, "reports"), exist_ok=True)
+        fallback_reports = (os.path.join(out_dir, "reports") if args.out_dir
+                            else os.path.join(root_dir, "reports"))
+        os.makedirs(fallback_reports, exist_ok=True)
+        fallback_img = os.path.join(fallback_reports, "reporte_entrenamiento_pro_max.png")
         plt.savefig(fallback_img, dpi=150)
         print(f"✅ Gráfico fallback guardado ({len(test_res)} velas)")
 if __name__ == "__main__":
-    import sys
     is_headless = "--headless" in sys.argv
     if is_headless:
         import matplotlib

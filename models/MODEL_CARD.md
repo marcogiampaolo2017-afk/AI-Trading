@@ -86,6 +86,36 @@ Keep it as a **reproducible baseline** to compare future training runs against, 
 3. **Single seed** (open). None of the numbers above has a confidence interval.
 4. Progress chart title/filename hardcoded "600k" (fixed on this branch).
 
+## Reward audit (2026-10-22)
+
+`python research/reward_audit.py --bars 3000` decomposes the environment reward term by term
+(`env.step()` now returns `info["reward_breakdown"]`) on a 3,000-bar out-of-sample window:
+
+| Policy | teacher | Trades | Equity | P&L terms | Shaping terms | Total |
+|---|---|---|---|---|---|---|
+| hold   | off | 0  | 110.00 | 0.00    | -116.00    | -116.00 |
+| random | off | 79 | 137.22 | 1,825.57 | -3,751.49 | -1,925.92 |
+| model  | off | 88 | 110.98 | 1,326.15 | -4,911.11 | -3,584.97 |
+| hold   | on  | 0  | 110.00 | 0.00    | -116.00    | -116.00 |
+| random | on  | 80 | 111.55 | 1,365.05 | -12,060.87 | -10,695.82 |
+| model  | on  | 88 | 117.98 | 1,443.96 | -7,498.18 | -6,054.22 |
+
+Findings:
+
+1. **The per-step drawdown penalty dominates.** `-(dd_ratio * 10)` is charged on every bar below
+   the equity peak and accumulates -3.8k to -6.7k reward units over 3k bars — 2-5x the P&L terms.
+2. **`teacher_mode` doubles the noise**: its +-5/+-10/+-15 bonuses add another -3k (model) / -5.4k
+   (random).
+3. **Doing nothing wins the reward.** Flat `hold` collects only -116 (the `fer_block` term), so the
+   reward-maximising policy is to not trade — even when trading was profitable (random made +$27 in
+   the same window). That is exactly the behaviour the 3M model exhibits.
+4. `realized` is not raw pips either: `_close_position` doubles TP hits and multiplies losses by
+   1.5, adding another shaping layer on top.
+
+Conclusion: the training objective is not P&L, and more steps cannot fix that. The audit tooling and
+the diagnostic flags (`--steps`, `--teacher-mode`, `--dd-penalty-scale`, `--seed`, `--out-dir`,
+`--fresh`) are in place to measure each fix in isolation.
+
 ## Recommended plan for the next run
 
 Nothing below is implemented yet; it is the shortlist to make the next run comparable and cheaper.

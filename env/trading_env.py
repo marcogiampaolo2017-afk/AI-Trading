@@ -47,6 +47,9 @@ class ForexTradingEnv(gym.Env):
         teacher_mode: bool = False,
         max_drawdown_fraction: float = 0.30,  # truncate episode if equity drops >30%
         allow_manual_close: bool = False,     # if False, removes CLOSE action; SL/TP only
+        # 0.0 disables the per-step drawdown penalty. research/reward_audit.py
+        # showed it accumulating ~4k reward per 3k bars and dominating P&L.
+        drawdown_penalty_scale: float = 1.0,
     ):
         super().__init__()
         self.df = df.reset_index(drop=True)
@@ -77,6 +80,7 @@ class ForexTradingEnv(gym.Env):
         self.open_penalty_pips = float(open_penalty_pips)
         self.time_penalty_pips = float(time_penalty_pips)
         self.teacher_mode = bool(teacher_mode)
+        self.drawdown_penalty_scale = float(drawdown_penalty_scale)
         self.random_start = bool(random_start)
         self.min_episode_steps = int(min_episode_steps)
         self.episode_max_steps = episode_max_steps if episode_max_steps is None else int(episode_max_steps)
@@ -135,6 +139,7 @@ class ForexTradingEnv(gym.Env):
         self.max_equity_usd = self.initial_equity_usd
         self.equity_curve = []
         self.last_trade_info = None
+        self.last_reward_breakdown: dict[str, float] = {}
     def _get_state_features(self):
         pos = float(self.position)
         t_norm = float(self.time_in_trade) / 1000.0
@@ -353,11 +358,24 @@ class ForexTradingEnv(gym.Env):
         self.steps_in_episode += 1
         reward_pips = 0.0
         info = {}
+        # Per-term attribution of the reward. Sum of the values equals
+        # reward_pips exactly; research/reward_audit.py uses it to show which
+        # term actually drives the policy.
+        rb: dict[str, float] = {
+            "teacher": 0.0,
+            "open_cost": 0.0,
+            "chaos_penalty": 0.0,
+            "realized": 0.0,
+            "unrealized_delta": 0.0,
+            "drawdown": 0.0,
+            "fer_block": 0.0,
+        }
         act_type, direction, sl_pips, tp_pips = self.action_map[int(action)]
         t_vsa = float(self.df.loc[self.current_step, "vsa_ratio_norm"]) if "vsa_ratio_norm" in self.df.columns else 1.0
         t_fer = float(self.df.loc[self.current_step, "quant_fer"]) if "quant_fer" in self.df.columns else 0.5
         t_z   = float(self.df.loc[self.current_step, "quant_zscore"]) if "quant_zscore" in self.df.columns else 0.0
         if self.teacher_mode:
+            _teacher_before = reward_pips
             if act_type == "OPEN" and self.position == 0:
                 vsa_ok = t_vsa > 1.1
                 lazarus_ok = (t_fer >= 0.30 or abs(t_z) >= 1.2)
@@ -389,6 +407,7 @@ class ForexTradingEnv(gym.Env):
                     reward_pips -= 15.0                                            
             else:
                 self.max_observed_pips = 0
+            rb["teacher"] = reward_pips - _teacher_before
         chaos_penalty = 0.0
         if act_type == "OPEN":
             if direction is None or sl_pips is None or tp_pips is None:
@@ -411,34 +430,46 @@ class ForexTradingEnv(gym.Env):
             if self.position == 0:
                 self._open_position(direction=direction, sl_pips=sl_pips, tp_pips=tp_pips)
                 reward_pips -= (self.open_penalty_pips + chaos_penalty)
+                rb["open_cost"] -= self.open_penalty_pips
+                rb["chaos_penalty"] -= chaos_penalty
             elif self.allow_flip and self.position != direction:
                 close_price = float(self.df.loc[self.current_step, "Close"])
                 reward_pips += self._close_position("FLIP_CLOSE", close_price)
                 self._open_position(direction=direction, sl_pips=sl_pips, tp_pips=tp_pips)
                 reward_pips -= (self.open_penalty_pips + chaos_penalty)
+                rb["open_cost"] -= self.open_penalty_pips
+                rb["chaos_penalty"] -= chaos_penalty
         elif act_type == "CLOSE":
             if self.position != 0:
                 close_price = float(self.df.loc[self.current_step, "Close"])
                 slip_pips = self._sample_slippage_pips()
                 slip_price = slip_pips * self.pip_value
                 exit_price = close_price - slip_price if self.position == 1 else close_price + slip_price
-                reward_pips += self._close_position("MANUAL_CLOSE", exit_price)
+                _manual = self._close_position("MANUAL_CLOSE", exit_price)
+                reward_pips += _manual
+                rb["realized"] += _manual
         if self.position == 0 and t_fer > 0.5:
-            reward_pips -= 0.5                                              
+            reward_pips -= 0.5
+            rb["fer_block"] -= 0.5
         realized_now = self._check_sl_tp_intrabar_and_maybe_close()
         if realized_now is not None:
             reward_pips += realized_now
+            rb["realized"] += realized_now
         if self.position != 0:
             self.time_in_trade += 1
             unreal_now = self._compute_unrealized_pips()
             delta_unreal = unreal_now - self.prev_unrealized_pips
             total_equity_now = self.equity_usd + unreal_now * self.usd_per_pip
             # Use a linear scaling for continuous reward based on unreleased profit rather than volatile log.
-            reward_pips += delta_unreal * getattr(self, "unrealized_delta_weight", 0.1)                                
+            _unreal_reward = delta_unreal * getattr(self, "unrealized_delta_weight", 0.1)
+            reward_pips += _unreal_reward
+            rb["unrealized_delta"] += _unreal_reward                                
             if total_equity_now < self.max_equity_usd:
                 dd_ratio = (self.max_equity_usd - total_equity_now) / self.max_equity_usd
                 if dd_ratio > 0.10:
-                    reward_pips -= (dd_ratio * 10.0) 
+                    _dd_penalty = dd_ratio * 10.0 * self.drawdown_penalty_scale
+                    reward_pips -= _dd_penalty
+                    rb["drawdown"] -= _dd_penalty
             if total_equity_now > self.max_equity_usd:
                 self.max_equity_usd = total_equity_now
             self.prev_unrealized_pips = unreal_now
@@ -466,8 +497,10 @@ class ForexTradingEnv(gym.Env):
             "position": int(self.position),
             "time_in_trade": int(self.time_in_trade),
             "reward_pips": float(reward_pips),
+            "reward_breakdown": rb,
             "last_trade_info": self.last_trade_info
         })
+        self.last_reward_breakdown = rb
         return obs, reward, self.terminated, self.truncated, info
     def render(self):
         print(
