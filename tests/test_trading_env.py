@@ -14,6 +14,7 @@ Cuidado especial a:
 import os
 import sys
 import math
+from typing import Any
 import pytest
 import numpy as np
 import pandas as pd
@@ -62,7 +63,7 @@ def _make_random_df(n: int = _NROWS, seed: int = 42) -> pd.DataFrame:
     for c in cols:
         if c not in data:
             data[c] = rng.uniform(-1, 1, n)
-    df = pd.DataFrame(data, columns=cols)
+    df = pd.DataFrame(data, columns=pd.Index(cols))
     df.reset_index(drop=True, inplace=True)
     return df
 
@@ -70,7 +71,7 @@ def _make_random_df(n: int = _NROWS, seed: int = 42) -> pd.DataFrame:
 def _make_env(df=None, **kwargs):
     if df is None:
         df = _make_random_df()
-    defaults = dict(
+    defaults: dict[str, Any] = dict(
         window_size=_WIN,
         sl_options=_SL_OPTS,
         tp_options=_TP_OPTS,
@@ -87,7 +88,7 @@ def _make_env(df=None, **kwargs):
 class TestEnvInit:
     def test_obs_shape_after_reset(self):
         env = _make_env()
-        obs, *_ = env.reset() if hasattr(env, "reset") else (env.reset(),)
+        obs, _ = env.reset()
         assert obs.shape == env.observation_space.shape, (
             f"Obs shape mismatch: got {obs.shape}, expected {env.observation_space.shape}"
         )
@@ -148,8 +149,7 @@ class TestEnvStep:
         env = _make_env()
         env.reset()
         for _ in range(300):
-            result = env.step(env.action_space.sample())
-            info = result[-1] if isinstance(result[-1], dict) else result[3]
+            _, _, _, _, info = env.step(env.action_space.sample())
             eq = info.get("equity_usd", None)
             assert eq is not None
             assert math.isfinite(eq), f"equity_usd={eq} is not finite"
@@ -290,12 +290,8 @@ class TestEdgeCases:
         done = False
         steps = 0
         while not done and steps < 10000:
-            result = env.step(env.action_space.sample())
-            if len(result) == 5:
-                _, _, terminated, truncated, _ = result
-                done = terminated or truncated
-            else:
-                _, _, done, _ = result
+            _, _, terminated, truncated, _ = env.step(env.action_space.sample())
+            done = terminated or truncated
             steps += 1
         assert steps > 0, "El episodio no avanzó ni un paso"
 
@@ -319,12 +315,8 @@ class TestStateCoherence:
         done = False
         steps = 0
         while not done and steps < 5000:
-            result = env.step(env.action_space.sample())
-            if len(result) == 5:
-                _, _, terminated, truncated, info = result
-                done = terminated or truncated
-            else:
-                _, _, done, info = result
+            _, _, terminated, truncated, info = env.step(env.action_space.sample())
+            done = terminated or truncated
             eq = info.get("equity_usd", 10000.0)
             assert math.isfinite(eq), f"equity={eq} at step {steps}"
             steps += 1
