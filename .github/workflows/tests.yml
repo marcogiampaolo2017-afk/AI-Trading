@@ -6,52 +6,54 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   test:
+    name: pytest (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # Supported range declared in README/Requirements.txt
+        python-version: ["3.11", "3.13"]
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.12
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: Requirements.txt
 
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('Requirements.txt') }}
-          restore-keys: ${{ runner.os }}-pip-
-
-      - name: Install dependencies
+      # Only what tests/ imports: the suite covers env/ and config.py, so
+      # torch/SB3/Tk are not required here - the job stays fast and reliable.
+      - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
           pip install \
-            pytest pytest-timeout \
-            "stable-baselines3>=2.0" \
-            "sb3-contrib>=2.0" \
-            gymnasium \
-            numpy "pandas>=2.0" \
-            hmmlearn \
-            scipy \
-            matplotlib \
-            requests \
-            "pandas-ta>=0.3.14b"
+            "numpy==2.2.3" "pandas==2.2.3" "pandas-ta-classic==0.8.32" \
+            "gymnasium==1.0.0" "matplotlib==3.10.1" "PyYAML==6.0.2" \
+            "requests==2.32.3" "pytest==8.3.5" "pytest-timeout==2.3.1"
 
       - name: Verify imports
-        run: |
-          python -c "import numpy, pandas, gymnasium, hmmlearn; print('Core imports OK')"
-          python -c "import pandas_ta; print('pandas_ta OK')" || echo "pandas_ta optional — skipping TA-dependent tests"
-          python -c "import sys; sys.path.insert(0,'.');  from env.indicators import _safe_div; print('indicators OK')"
-          python -c "import sys; sys.path.insert(0,'.'); from env.trading_env import ForexTradingEnv; print('trading_env OK')"
-
-      - name: Run unit tests
-        run: |
-          pytest tests/test_indicators.py tests/test_trading_env.py \
-            -v --tb=short \
-            --timeout=120 \
-            -k "not csv and not integration"
         env:
           PYTHONPATH: .
+        run: |
+          python -c "import numpy, pandas, gymnasium; print('Core imports OK')"
+          python -c "import pandas_ta_classic as ta; print('pandas_ta_classic OK')"
+          python -c "from env.indicators import _safe_div; print('indicators OK')"
+          python -c "from env.trading_env import ForexTradingEnv; print('trading_env OK')"
+
+      - name: Run test suite
+        env:
+          PYTHONPATH: .
+        run: pytest tests/ -v --tb=short --timeout=180
