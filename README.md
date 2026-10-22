@@ -3,11 +3,11 @@
 > Autonomous EURUSD H1 trading bot powered by **Recurrent PPO (LSTM)** running live on MetaTrader 5.
 > Targets **+€1/day** on a €100 AvaTrade demo account with 3:1 R:R and multi-layer risk protection.
 
-[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![Python 3.11–3.13](https://img.shields.io/badge/python-3.11--3.13-blue.svg?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Stable-Baselines3](https://img.shields.io/badge/SB3-RecurrentPPO-orange.svg?style=for-the-badge)](https://github.com/DLR-RM/stable-baselines3)
 [![MetaTrader5](https://img.shields.io/badge/MetaTrader-5-1565c0.svg?style=for-the-badge)](https://www.metatrader5.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-67%20passing-brightgreen.svg?style=for-the-badge)](tests/)
+[![Tests](https://img.shields.io/badge/tests-66%20collected-brightgreen.svg?style=for-the-badge)](tests/)
 
 [Quick Start](#quick-start) · [Architecture](#architecture) · [Live Bot](#live-bot) · [Training](#training) · [Configuration](#configuration) · [Contributing](#contributing)
 
@@ -31,19 +31,36 @@
 
 ### 1. Clone & Install
 
+> [!IMPORTANT]
+> **Usá Python 3.11 – 3.13 (recomendado 3.13).** Con 3.14/3.15 el `pip install` falla
+> (`No matching distribution found for pywin32==310`, numpy `Requires-Python <3.13`)
+> porque numpy, torch y MetaTrader5 todavía no publican wheels para esas versiones,
+> y el entorno queda a medio instalar: de ahí los "import could not be resolved" de VS Code.
+
 ```bash
 git clone https://github.com/marcogiampaolo2017-afk/AI-Trading.git
 cd AI-Trading
-python -m venv .venv
 
-# Windows
-.venv\Scripts\activate
+# Windows: crear el venv con 3.13 explícito (no con el "python" por defecto)
+py -3.13 -m venv .venv
+.\.venv\Scripts\Activate.ps1
 
 # macOS / Linux
-source .venv/bin/activate
+# python3.13 -m venv .venv && source .venv/bin/activate
 
+python -m pip install --upgrade pip
 pip install -r Requirements.txt
 ```
+
+Comprobá que todo quedó bien antes de seguir:
+
+```bash
+python check_env.py          # imports + pipeline de features; exit code 1 si algo falta
+```
+
+En VS Code, el intérprete ya queda fijado por `.vscode/settings.json`
+(`.venv\Scripts\python.exe`). Si Pylance sigue marcando imports, ejecutá
+`Ctrl+Shift+P → Python: Select Interpreter` y elegí ese mismo archivo.
 
 ### 2. Set MT5 Credentials
 
@@ -72,7 +89,7 @@ python core/TITANY_AI_Terminal_Pro.py --headless
 
 ```bash
 pytest tests/ -v
-# 67 tests — skips automatically if master CSV is missing
+# 66 tests: 28 corren siempre; 38 se saltean si falta el CSV maestro (config.py:14)
 ```
 
 ---
@@ -212,6 +229,43 @@ SL_TP_PAIRS = [(20, 60)]   # Only this pair — 3:1 R:R, breakeven at 25% win ra
 # Create this file to trigger emergency model save + clean shutdown:
 New-Item stop_training.flag -ItemType File
 ```
+
+---
+
+## Troubleshooting
+
+### `pip install` termina con errores de `pywin32` o `numpy`
+
+**Causa:** el venv se creó con Python 3.14/3.15. numpy, torch y MetaTrader5 solo
+publican wheels hasta 3.13, así que pip no encuentra versiones y aborta a mitad de
+instalación (dejando el entorno incompleto).
+
+```powershell
+Remove-Item .venv -Recurse -Force
+py -3.13 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r Requirements.txt
+python check_env.py
+```
+
+### VS Code / Pylance: "import could not be resolved" en `MetaTrader5`, `pandas`, `sb3_contrib`…
+
+**Causa:** el intérprete seleccionado no es el venv del proyecto (o el venv está vacío
+por el fallo anterior). Solución: `Ctrl+Shift+P → Python: Select Interpreter →
+.venv\Scripts\python.exe` y recargar la ventana (`Developer: Reload Window`).
+
+### `ModuleNotFoundError: No module named 'pandas_ta'`
+
+El paquete que instala `Requirements.txt` es **`pandas-ta-classic`**, que expone el
+módulo `pandas_ta_classic`. `env/indicators.py` acepta ambos nombres; si ves el error,
+reinstalá las dependencias o corré `python check_env.py` para confirmar cuál falta.
+
+### `mt5.initialize()` devuelve `False`
+
+MetaTrader 5 debe estar **instalado, abierto y logueado** en la misma máquina (y en la
+misma arquitectura: 64 bits). El import de `MetaTrader5` funciona sin terminal; la
+conexión, no.
 
 ---
 
