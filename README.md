@@ -200,8 +200,8 @@ Training auto-resumes from checkpoints. Phase detection based on `model.num_time
 | 3 | 2.2M – 3M | Live-like conditions, HMM regime, full indicator stack |
 
 > **Current model status:** the 3M-step baseline is documented in
-> [`models/MODEL_CARD.md`](models/MODEL_CARD.md). Out-of-sample it returns **-30.9%**
-> (22.4% win rate vs the 25% break-even of a 3:1 R:R), so it is **not approved for live
+> [`models/MODEL_CARD.md`](models/MODEL_CARD.md). Out-of-sample it returns **-30.3%**
+> (18.5% win rate vs the 25% break-even of a 3:1 R:R), so it is **not approved for live
 > trading** — treat it as the reference run to improve on.
 
 > After training, copy `models/model_eurusd_titany_vXX.zip` and `models/vec_normalize.pkl` to the live machine.

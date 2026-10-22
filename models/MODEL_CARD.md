@@ -11,8 +11,17 @@ Distribute the model and the normalizer together: a mismatched pair silently dis
 | File | Size (bytes) | SHA-256 | Role |
 |---|---|---|---|
 | `models/model_eurusd_titany_v12_sniper.zip` | 24,264,488 | `9a4b619df48fc8608adcecc6d7b720ae2614d3b93d5ca5e059c9cc1f8da303da` | Policy weights (RecurrentPPO / MlpLstmPolicy) |
-| `models/vec_normalize.pkl` | 46,480 | `b6df84d7e23377f49c318ff9436180bc8253f602625b5a06bd472299fd81251b` | Observation normalizer, `(30, 30)` obs, 3 actions |
+| `models/vec_normalize.pkl` | 46,480 | `121c088867428c0c1bc6ec2a2e56d54163067169874139151e906af7b76ecfad` | Observation normalizer, `(30, 30)` obs, 3 actions. Restored from the last checkpoint (`titany_ckpt_vecnormalize_2999952_steps.pkl`) — see note below. |
 | `models/best_models/best_model.zip` | 24,264,461 | — | EvalCallback "best" @ 420k steps. Also backtested: **-31.1% in 168 bars, 8 trades, 0% win rate** — worse than the final model, which confirms the selection was noise. |
+
+> **Normalizer provenance.** When the generated artifacts were untracked (commit `7543ce7`),
+> the fast-forward merge to `main` removed the final `vec_normalize.pkl` from the working tree —
+> untracking a file only keeps it on disk while no branch switch touches it.
+> The file above was restored from the last checkpoint (`models/checkpoints/titany_ckpt_vecnormalize_2999952_steps.pkl`,
+> 2,999,952 steps vs the 3,013,632 of the final save): same `(30, 30)` space and statistically
+> equivalent, but not byte-identical to the lost pickle. The trade list is sensitive to this
+> difference (see *Normalizer sensitivity* below), so comparisons with a freshly retrained pair
+> should be made pair-by-pair.
 
 ## Training run
 
@@ -37,18 +46,25 @@ Distribute the model and the normalizer together: a mismatched pair silently dis
 `python research/test_agent.py --headless` on the last 20% of the data (never seen in training,
 teacher mode off, 1 pip spread, 0.2 pip slippage, 30% drawdown breaker):
 
-| Metric | Value |
-|---|---|
-| Initial / final equity | $110.00 → $76.02 |
-| Total return | **-30.89%** |
-| Max drawdown | 48.77% (measured from the $146 equity peak) |
-| Trades | 125 |
-| Win rate | **22.4%** (break-even at 3:1 R:R is 25%) |
-| Avg win / avg loss | +110.3 / -35.2 pips |
-| Profit factor | 0.90 |
+Measured with the artifact pair as it exists today (model + restored normalizer):
 
-The run stopped at bar ~4,168 of 19,886 because the equity circuit breaker
+| Metric | Value (restored pair) | Value (original final pair, lost) |
+|---|---|---|
+| Initial / final equity | $110.00 → $76.66 | $110.00 → $76.02 |
+| Total return | **-30.31%** | -30.89% |
+| Max drawdown | 43.12% | 48.77% |
+| Trades | 27 | 125 |
+| Win rate | **18.5%** (break-even at 3:1 R:R is 25%) | 22.4% |
+| Avg win / avg loss | +138.2 / -46.6 pips | +110.3 / -35.2 pips |
+| Profit factor | 0.67 | 0.90 |
+
+Both runs stopped early because the equity circuit breaker
 (`MAX_DRAWDOWN_FRACTION = 0.30`) fired — exactly what would happen on a live account.
+
+> **Normalizer sensitivity.** A ~0.5% difference in the observation statistics (13.7k steps of
+> running RMS) turns 125 trades into 27 and profit factor 0.90 into 0.67. The policy is brittle
+> with respect to normalization — another reason not to run it live, and a reason to store the
+> model+normalizer as an immutable pair.
 
 ## Verdict
 
