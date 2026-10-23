@@ -205,9 +205,11 @@ Training auto-resumes from checkpoints. Phase detection based on `model.num_time
 > (18.5% win rate vs the 25% break-even of a 3:1 R:R), so it is **not approved for live
 > trading** — treat it as the reference run to improve on.
 >
-> A 500k-step diagnostic with `--teacher-mode off` (same code, seed 42) improves profit factor
-> from 0.82/0.68 to **1.24/0.97** on two disjoint 3,000-bar OOS windows: the teacher-mode shaping
-> was actively harmful. Still **not** approved for live trading (one window is break-even).
+> Two 500k-step diagnostics isolate the reward problems (same code, seed 42, two disjoint
+> 3,000-bar OOS windows): `--teacher-mode off` improves profit factor from 0.82/0.68 to
+> **1.24/0.97** (mean +19.2% vs -30.9%), while additionally removing the drawdown penalty
+> (`--dd-penalty-scale 0`) makes the policy bimodal (+30.3% / -29.8%). The teacher shaping was
+> actively harmful; the drawdown penalty is load-bearing. Still **not** approved for live trading.
 
 ### Diagnostic runs
 

@@ -135,37 +135,47 @@ the diagnostic flags (`--steps`, `--teacher-mode`, `--dd-penalty-scale`, `--seed
 With the reward audit in hand, two short runs isolate each fix. Same data split, seed 42, bounded
 evaluation episodes, 6 workers, isolated output dirs under `models/diagnostics/`.
 
-| Run | teacher | dd_scale | Steps | Output | Status |
+| Run | teacher | dd_scale | Steps | Wall time | Output |
 |---|---|---|---|---|---|
-| A | off | 1.0 | 516,096 | `models/diagnostics/teacher_off/` | done |
-| B | off | 0.0 | 500,000 | `models/diagnostics/teacher_off_dd0/` | in progress |
+| A | off | 1.0 | 516,096 | 2 h 07 min | `models/diagnostics/teacher_off/` |
+| B | off | 0.0 | 516,096 | ~2 h | `models/diagnostics/teacher_off_dd0/` |
 
-### Run A — teacher shaping removed (the 500k diagnostic)
+### Evaluation curves (3 bounded episodes every 60k steps)
 
-Training took 2 h 07 min (15:13 → 17:20), 8 evaluations. Evaluation mean reward (3 bounded episodes
-each): -922, -1,193, -3,431, -1,822, +157, -2,706, -478, **+1,537** — noisy, but the trend is upward
-and it ends positive, something the 3M reference run never did.
+| Run | 60k | 120k | 180k | 240k | 300k | 360k | 420k | 480k |
+|---|---|---|---|---|---|---|---|---|
+| A | -922 | -1,193 | -3,431 | -1,822 | +157 | -2,706 | -478 | **+1,537** |
+| B | -484 | +74 | -327 | -214 | +1,340 | +1,232 | +1,299 | **+2,553** |
 
-Out-of-sample comparison on two disjoint 3,000-bar windows of the test set (teacher mode off for
-evaluation, same env, same costs):
+Both end positive, which the 3M reference run never did. But recall that a positive eval reward is
+not profitability (see the B result below).
 
-| Model | Window | Bars run | Return | Max DD | Trades | Win rate | PF |
-|---|---|---|---|---|---|---|---|
-| 3M baseline | 1 | 2,172 | **-30.03%** | 43.04% | 56 | 19.6% | 0.82 |
-| 3M baseline | 2 | 1,160 | **-31.83%** | 47.49% | 44 | 18.2% | 0.68 |
-| A — 500k, teacher off | 1 | 2,999 | **+42.52%** | 32.65% | 70 | 27.1% | **1.24** |
-| A — 500k, teacher off | 2 | 2,999 | **-4.03%** | 24.86% | 73 | 26.0% | 0.97 |
+### Out-of-sample backtests, two disjoint 3,000-bar windows
 
-Reading: the teacher-off model is robustly better (PF 1.24 and 0.97 vs 0.82 and 0.68), survives both
-windows without hitting the drawdown breaker, and clears the 25% break-even win rate in both. It is
-**not** a profitable strategy yet: window 2 is essentially break-even.
+| Training config | Window 1 | Window 2 | Mean | PF (w1 / w2) |
+|---|---|---|---|---|
+| 3M baseline (teacher on, dd on) | -30.03% | -31.83% | **-30.9%** | 0.82 / 0.68 |
+| A — 500k, teacher off, dd on | **+42.52%** | **-4.03%** | **+19.2%** | 1.24 / 0.97 |
+| B — 500k, teacher off, dd off | +30.29% | -29.81% | +0.2% | 1.17 / 0.47 |
 
-Caveats: 3,000-bar windows (~4 months of H1 each), one seed, and the full 19,886-bar backtest is
-pending (the host CPU is shared with a game, which starves the LSTM backtest).
+Window details for the two diagnostic runs: A ran the full 2,999 bars in both windows (no drawdown
+breaker trip), max DD 32.65% / 24.86%, win rate 27.1% / 26.0%. B ran 2,999 bars in window 1 but was
+stopped by the drawdown breaker after 967 bars in window 2 (max DD 36.81%, win rate 12.5%).
 
-Conclusion so far: **the teacher-mode shaping was actively harmful**, and removing it is worth more
-than 5x the training budget of the reference run. Run B tests whether disabling the drawdown penalty
-adds anything on top.
+### What this changes for the next long run
+
+1. **Turn teacher shaping off.** Removing it is worth more than 5x the training budget of the
+   reference run: both diagnostic arms beat the 3M baseline on both windows.
+2. **Keep the drawdown penalty.** It dominates the reward decomposition, but it also acts as risk
+   shaping: removing it makes the policy bimodal (+30% / -30%). A's config (teacher off, dd on) is
+   the robust one.
+3. **Do not trust the eval reward as a profitability proxy.** B ended with the best eval mean
+   (+2,553) and then lost 30% on window 2.
+4. Next long run: 3M steps, teacher off, dd on, seed replication (3 seeds), evaluated on at least two
+   windows. Only then consider the live terminal.
+
+Caveats: 3,000-bar windows (~4 months of H1 each), single seed per arm, and full 19,886-bar
+backtests are pending (the host CPU was shared with a game during the comparison).
 ## Recommended plan for the next run
 
 Nothing below is implemented yet; it is the shortlist to make the next run comparable and cheaper.
